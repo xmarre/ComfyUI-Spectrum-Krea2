@@ -28,14 +28,12 @@ def validate_sampler(executor, model_wrap, sigmas, extra_args):
         return f"unsupported sampler container: {type(sampler).__module__}.{type(sampler).__name__}"
     # The native container still executes on every call. Its logging/callback
     # implementation varies across ComfyUI releases without changing the solver.
-    # Validate the entrypoint/API here and the actual solver function below.
+    # Validate the bound entrypoint here and the actual solver function below.
+    # ComfyUI invokes this container positionally. Parameter spelling, optional
+    # trailing arguments and decorator signatures do not define solver semantics.
     method = executor.original
     if getattr(method, "__self__", None) is not sampler or getattr(method, "__func__", None) is not KSAMPLER.sample:
         return "sampler entrypoint has been replaced outside native KSAMPLER"
-    expected = ("self", "model_wrap", "sigmas", "extra_args", "callback", "noise",
-                "latent_image", "denoise_mask", "disable_pbar")
-    if tuple(inspect.signature(KSAMPLER.sample).parameters) != expected:
-        return "native KSAMPLER.sample API changed"
     function = sampler.sampler_function
     allowed = (sampling.sample_euler, sampling.sample_dpmpp_2m)
     if function not in allowed or not verified(function, "native." + function.__name__):
@@ -66,6 +64,15 @@ class Binding:
 
     def sampler(self, executor, model_wrap, sigmas, extra_args, callback, noise,
                 latent_image=None, denoise_mask=None, disable_pbar=False):
+        if self.config.debug:
+            try:
+                signature = str(inspect.signature(executor.original))
+            except (TypeError, ValueError):
+                signature = "<unavailable>"
+            container = type(executor.class_obj)
+            LOG.info("Spectrum Krea 2 sampler: container=%s.%s signature=%s solver=%s",
+                     container.__module__, container.__name__, signature,
+                     getattr(getattr(executor.class_obj, "sampler_function", None), "__name__", "<unknown>"))
         reason = validate_sampler(executor, model_wrap, sigmas, extra_args)
         if denoise_mask is not None:
             reason = reason or "latent inpaint masks are not forecast-enabled"

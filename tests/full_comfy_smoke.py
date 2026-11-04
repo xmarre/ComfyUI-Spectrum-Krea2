@@ -130,6 +130,19 @@ def main():
         assert reports[0]['effective_config']['tail']==1
         assert reports[0]['forecast']>0
         records.append({'turbo_steps':steps,**reports[0]})
+    # Transparent native-container wrappers must not disable the real solver.
+    from sampler_variants import wrap_sample
+    import comfy.samplers
+    original_sample=comfy.samplers.KSAMPLER.sample
+    for variant in ('optional','variadic'):
+        comfy.samplers.KSAMPLER.sample=wrap_sample(original_sample,variant)
+        try:
+            selected=node.apply(model,preset='turbo',warmup=1,tail=1)[0]
+            _,reports=sample(selected,noise,positive,negative,1.,'euler')
+            assert reports[0]['fallback'] is None and reports[0]['forecast']>0
+            records.append({'container_wrapper':variant,**reports[0]})
+        finally:
+            comfy.samplers.KSAMPLER.sample=original_sample
     print(json.dumps({'full_native_cases':len(records),'records':records},sort_keys=True))
 
 

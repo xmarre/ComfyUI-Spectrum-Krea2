@@ -317,3 +317,33 @@ def test_non_native_sampler_container_is_identified(native):
     executor=types.SimpleNamespace(class_obj=object())
     reason=validate_sampler(executor,None,torch.linspace(1,0,5),{})
     assert reason=='unsupported sampler container: builtins.object'
+
+
+@pytest.mark.parametrize('variant',['optional','renamed','variadic'])
+def test_sampler_signature_variants_preserve_native_and_allow_forecasting(native,monkeypatch,variant):
+    from comfy.samplers import KSAMPLER
+    from sampler_variants import wrap_sample
+    model=tiny_model(native[0])
+    torch.manual_seed(42)
+    expected,_=run(model,Config(window=0))
+    monkeypatch.setattr(KSAMPLER,'sample',wrap_sample(KSAMPLER.sample,variant))
+    torch.manual_seed(42)
+    actual,_=run(model,Config(window=0))
+    torch.testing.assert_close(actual,expected,atol=0,rtol=0)
+    _,report=run(model,Config(preset='turbo',warmup=1,tail=1))
+    assert report['fallback'] is None and report['forecast']>0
+    assert report['actual']+report['forecast']==12
+
+
+def test_signature_introspection_failure_only_affects_diagnostics(native,monkeypatch,caplog):
+    import logging
+    from comfy.samplers import KSAMPLER
+    from sampler_variants import wrap_sample
+    wrapped=wrap_sample(KSAMPLER.sample,'variadic')
+    wrapped.__signature__='invalid introspection metadata'
+    monkeypatch.setattr(KSAMPLER,'sample',wrapped)
+    model=tiny_model(native[0])
+    with caplog.at_level(logging.INFO):
+        _,report=run(model,Config(preset='turbo',warmup=1,tail=1,debug=True))
+    assert report['fallback'] is None and report['forecast']>0
+    assert 'signature=<unavailable>' in caplog.text
