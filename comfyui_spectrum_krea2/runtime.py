@@ -37,6 +37,7 @@ class Session:
     reasons: Counter = field(default_factory=Counter)
     disabled_reason: str | None = None
     peak_history_bytes: int = 0
+    weight_owner: object = None
 
     def disable(self, reason):
         if self.disabled_reason is None:

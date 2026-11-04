@@ -14,9 +14,6 @@ CAPTURE = contextvars.ContextVar("spectrum_krea2_capture", default=None)
 def call_contract(session, inner, x, context, ref_latents, options, kwargs):
     if inner is not session.model or not native_model(inner):
         return "model identity changed"
-    owner = kwargs.get("_weight_owner")
-    if owner is not None and getattr(owner, "current_weight_patches_uuid", None) != session.weight_identity:
-        return "active weight patches changed"
     if torch.is_grad_enabled():
         return "gradient-enabled execution"
     if not torch.is_tensor(x) or x.ndim not in (4, 5) or (x.ndim == 5 and x.shape[2] != 1):
@@ -36,7 +33,7 @@ def call_contract(session, inner, x, context, ref_latents, options, kwargs):
         return "external transformer modifications are active"
     if kwargs.get("control") is not None:
         return "control conditioning is active"
-    unknown = set(kwargs) - {"control", "ref_latents_method", "_weight_owner"}
+    unknown = set(kwargs) - {"control", "ref_latents_method"}
     if unknown:
         return "unverified model inputs: " + ", ".join(sorted(unknown))
     method = kwargs.get("ref_latents_method", inner.default_ref_method)
@@ -108,6 +105,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         stream.history.clear()
         session.reason("repeated branch evaluation at one outer step")
     if session.should_forecast(stream):
+        prediction = None
         try:
             prediction = stream.history.predict(session.coordinates[step], x.device, stream.history.features[-1].dtype)
             output = project(inner, prediction, timesteps, x)
@@ -115,6 +113,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
             # Retry only forecast-owned work. Errors from the native denoiser
             # below are allowed to propagate unchanged.
             session.reason("forecast rejected: " + str(exc))
+            prediction = None
             stream.history.clear()
         else:
             stream.last_step = step

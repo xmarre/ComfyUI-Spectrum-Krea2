@@ -2,6 +2,7 @@
 # Copyright (c) 2026 xmarre
 import json
 import logging
+import math
 import torch
 from .compat import verified, model_contract
 from .runtime import CURRENT, REPORTS, Session
@@ -59,7 +60,7 @@ class Binding:
         if not model_contract(inner):
             reason = reason or "native Krea 2 source contract changed"
         values = sigmas.detach().to(device="cpu", dtype=torch.float64).tolist() if torch.is_tensor(sigmas) and sigmas.ndim == 1 else []
-        if (len(values) < 2 or any(not torch.isfinite(torch.tensor(v)) for v in values) or
+        if (len(values) < 2 or any(not math.isfinite(v) for v in values) or
                 values[-1] < 0 or any(a <= b for a, b in zip(values, values[1:]))):
             reason = reason or "sigma schedule is empty, nonfinite or not strictly decreasing"
         if not torch.is_tensor(noise) or noise.ndim not in (4, 5) or (noise.ndim == 5 and noise.shape[2] != 1):
