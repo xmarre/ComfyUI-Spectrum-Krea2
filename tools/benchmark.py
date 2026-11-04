@@ -39,13 +39,13 @@ def main():
     import comfy.options
     comfy.options.enable_args_parsing()
     import torch
+    if not torch.cuda.is_available():
+        raise SystemExit('This benchmark requires a CUDA GPU and real Krea 2 weights')
     import nodes
     import comfy.model_management as mm
     from comfy.patcher_extension import WrappersMP
     from comfyui_spectrum_krea2.nodes import SpectrumApplyKrea2
     from comfyui_spectrum_krea2.runtime import REPORTS
-    if not torch.cuda.is_available():
-        raise SystemExit('This benchmark requires a CUDA GPU and real Krea 2 weights')
     logging.basicConfig(level=logging.INFO)
     args.output.mkdir(parents=True,exist_ok=True)
     steps=args.steps or (52 if args.preset=='raw' else 8)

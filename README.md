@@ -42,7 +42,7 @@ RAW and Turbo have the same native class and no verified distillation flag. Prof
 | Standard weight LoRAs installed before this node | Original patched modules execute; state belongs to the current weight-patch identity | Lifecycle tests; real LoRA images pending |
 | 4D images / 5D with one temporal slice | Forecast-enabled; padding and output layout preserved | CPU tests |
 | Other samplers, repeated/nonmonotonic sigmas, Euler churn | Native fallback | Parity/fallback tests |
-| ControlNet, regional masks/areas, scheduled hooks, custom CFG, transformer modifications, compiled model replacements, multi-device execution | Native fallback | Contract tests; no acceleration claim |
+| ControlNet, latent inpaint masks, regional masks/areas, scheduled hooks, custom CFG, transformer modifications, compiled model replacements, multi-device execution | Native fallback | Contract tests; no acceleration claim |
 | Multi-frame 5D input | Native fallback | No video support claim |
 
 Attention dispatch remains native. Unknown transformer wrappers fall back conservatively because skipping them could remove required side effects. Disabled and bypassed execution do not change the native model math. Native failures propagate with guaranteed hook/context cleanup.

@@ -203,6 +203,7 @@ def test_call_identity_changes_do_not_reuse_history(native,changed):
             with torch.set_grad_enabled(changed=='gradient'):
                 call(model,binding,x,t,c,refs,options=opts)
         assert session.counts['forecast']==0
+        assert session.counts['actual']==3
     finally:
         CURRENT.reset(token)
 
@@ -233,3 +234,35 @@ def test_concurrent_contexts_ignore_other_capture_hooks(native):
     finally:
         CURRENT.reset(token)
         handle.remove()
+
+
+def test_nested_sampler_in_callback_has_independent_session(native):
+    model=tiny_model(native[0])
+    nested=[]
+    def callback(step,*args):
+        assert CURRENT.get() is None
+        if step==0:
+            _,report=run(model,steps=8)
+            nested.append(report)
+    _,report=run(model,callback=callback)
+    assert report['actual']+report['forecast']==12
+    assert nested[0]['actual']+nested[0]['forecast']==8
+    assert report['forecast']>0 and nested[0]['forecast']>0
+    assert CURRENT.get() is None
+
+
+def test_failed_native_call_is_not_counted_as_completed(native,monkeypatch):
+    model=tiny_model(native[0])
+    x,t,c=inputs(model)
+    binding,session=setup_session(model,x)
+    session.disable('native test')
+    def fail(*a,**kw):
+        raise ValueError('native failure')
+    monkeypatch.setattr(model.blocks[0],'forward',fail)
+    token=CURRENT.set(session)
+    try:
+        with torch.no_grad(),pytest.raises(ValueError,match='native failure'):
+            call(model,binding,x,t,c)
+    finally:
+        CURRENT.reset(token)
+    assert session.counts['actual']==0

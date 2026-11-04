@@ -94,6 +94,23 @@ def main():
     _,reports=sample(node.apply(model)[0],noise,positive,negative,4.5,'euler',denoise=.55)
     assert reports[0]['forecast']>0 and reports[0]['outer_steps']==12
     records.append({'denoise':.55,**reports[0]})
+    # A multistage solver remains exactly native, including its extra calls.
+    native,_=sample(model,noise,positive,negative,4.5,'heun')
+    bypass,reports=sample(node.apply(model)[0],noise,positive,negative,4.5,'heun')
+    torch.testing.assert_close(bypass,native,atol=0,rtol=0)
+    assert reports[0]['forecast']==0 and reports[0]['fallback'] is not None
+    assert reports[0]['actual']>12
+    records.append({'unsupported_sampler':'heun',**reports[0]})
+    foreign=model.clone()
+    def external_wrapper(executor,*a,**kw):
+        return executor(*a,**kw)+.125
+    from comfy.patcher_extension import WrappersMP
+    foreign.add_wrapper_with_key(WrappersMP.DIFFUSION_MODEL,'test_external',external_wrapper)
+    native,_=sample(foreign,noise,positive,negative,4.5,'euler')
+    bypass,reports=sample(node.apply(foreign)[0],noise,positive,negative,4.5,'euler')
+    torch.testing.assert_close(bypass,native,atol=0,rtol=0)
+    assert reports[0]['forecast']==0 and 'external' in reports[0]['fallback']
+    records.append({'external_wrapper':True,**reports[0]})
     print(json.dumps({'full_native_cases':len(records),'records':records},sort_keys=True))
 
 

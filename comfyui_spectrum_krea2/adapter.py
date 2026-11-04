@@ -79,12 +79,15 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
               ref_latents=None, transformer_options=None, **kwargs):
     options = transformer_options if transformer_options is not None else {}
     session = CURRENT.get()
-    native = lambda: executor(x, timesteps, context, attention_mask, ref_latents, options, **kwargs)
+    def native():
+        result = executor(x, timesteps, context, attention_mask, ref_latents, options, **kwargs)
+        if session is not None and session.binding is binding:
+            session.counts["actual"] += 1
+        return result
     if session is None or session.binding is not binding:
         return native()
     inner = executor.class_obj
     if session.disabled_reason or session.active_step is None:
-        session.counts["actual"] += 1
         return native()
     reason = call_contract(session, inner, x, context, ref_latents, options, kwargs)
     # Weight identity is read from the active native BaseModel, never a stale clone.
@@ -93,13 +96,11 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         reason = "active weight patches changed"
     if reason:
         session.reason(reason)
-        session.counts["actual"] += 1
         session.streams.clear()
         return native()
     key = stream_key(x, context, ref_latents, options, kwargs, inner)
     stream = session.stream(key)
     if stream is None:
-        session.counts["actual"] += 1
         return native()
     step = session.active_step
     if stream.last_step >= step:
@@ -139,13 +140,14 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         return None
 
     token = CAPTURE.set(capture_id)
-    handle = inner.last.register_forward_pre_hook(capture)
+    handle = None
     try:
+        handle = inner.last.register_forward_pre_hook(capture)
         output = native()
     finally:
-        handle.remove()
+        if handle is not None:
+            handle.remove()
         CAPTURE.reset(token)
-    session.counts["actual"] += 1
     stream.last_step = step
     if len(captured) == 1 and not capture_error:
         try:

@@ -46,3 +46,28 @@ def test_clone_patch_order_idempotence_and_disable(native):
 def test_unsupported_model_is_diagnosed(native):
     with pytest.raises(ValueError,match='native Krea 2'):
         SpectrumApplyKrea2().apply(Patcher(object()))
+
+
+def test_entrypoint_direct_import_without_package():
+    import pathlib
+    import runpy
+    namespace=runpy.run_path(str(pathlib.Path(__file__).resolve().parents[1]/'__init__.py'))
+    assert 'SpectrumApplyKrea2' in namespace['NODE_CLASS_MAPPINGS']
+
+
+def test_entrypoint_comfy_package_import():
+    import pathlib
+    import importlib.util
+    import sys
+    root=pathlib.Path(__file__).resolve().parents[1]
+    name='test_spectrum_krea2_comfy_entry'
+    spec=importlib.util.spec_from_file_location(name,root/'__init__.py',submodule_search_locations=[str(root)])
+    module=importlib.util.module_from_spec(spec)
+    sys.modules[name]=module
+    try:
+        spec.loader.exec_module(module)
+        assert 'SpectrumApplyKrea2' in module.NODE_CLASS_MAPPINGS
+    finally:
+        for key in list(sys.modules):
+            if key==name or key.startswith(name+'.'):
+                sys.modules.pop(key)

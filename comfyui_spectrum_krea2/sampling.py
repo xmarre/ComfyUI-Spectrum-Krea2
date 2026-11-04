@@ -56,6 +56,8 @@ class Binding:
     def sampler(self, executor, model_wrap, sigmas, extra_args, callback, noise,
                 latent_image=None, denoise_mask=None, disable_pbar=False):
         reason = validate_sampler(executor, model_wrap, sigmas, extra_args)
+        if denoise_mask is not None:
+            reason = reason or "latent inpaint masks are not forecast-enabled"
         inner = model_wrap.inner_model.diffusion_model
         if not model_contract(inner):
             reason = reason or "native Krea 2 source contract changed"
@@ -80,7 +82,13 @@ class Binding:
             session.step += 1
             session.predict_calls = 0
             if callback is not None:
-                callback(step, x0, x, total)
+                # User callbacks may invoke models or nested samplers. They are
+                # outside this trajectory's denoiser opportunity.
+                callback_token = CURRENT.set(None)
+                try:
+                    callback(step, x0, x, total)
+                finally:
+                    CURRENT.reset(callback_token)
 
         try:
             return executor(model_wrap, sigmas, extra_args, on_step, noise,
