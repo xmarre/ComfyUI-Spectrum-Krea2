@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 xmarre
 import json
+import inspect
 import logging
 import math
 import torch
@@ -23,8 +24,18 @@ def validate_sampler(executor, model_wrap, sigmas, extra_args):
     from comfy.samplers import KSAMPLER
     from comfy.k_diffusion import sampling
     sampler = executor.class_obj
-    if type(sampler) is not KSAMPLER or not verified(type(sampler).sample, "sampler.sample"):
-        return "sampler execution contract is unsupported"
+    if type(sampler) is not KSAMPLER:
+        return f"unsupported sampler container: {type(sampler).__module__}.{type(sampler).__name__}"
+    # The native container still executes on every call. Its logging/callback
+    # implementation varies across ComfyUI releases without changing the solver.
+    # Validate the entrypoint/API here and the actual solver function below.
+    method = executor.original
+    if getattr(method, "__self__", None) is not sampler or getattr(method, "__func__", None) is not KSAMPLER.sample:
+        return "sampler entrypoint has been replaced outside native KSAMPLER"
+    expected = ("self", "model_wrap", "sigmas", "extra_args", "callback", "noise",
+                "latent_image", "denoise_mask", "disable_pbar")
+    if tuple(inspect.signature(KSAMPLER.sample).parameters) != expected:
+        return "native KSAMPLER.sample API changed"
     function = sampler.sampler_function
     allowed = (sampling.sample_euler, sampling.sample_dpmpp_2m)
     if function not in allowed or not verified(function, "native." + function.__name__):

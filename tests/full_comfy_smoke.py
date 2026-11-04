@@ -14,6 +14,7 @@ import sys
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--comfy-root',type=pathlib.Path,required=True)
+    p.add_argument('--sampler-source-root',type=pathlib.Path)
     args=p.parse_args()
     sys.path[:0]=[str(args.comfy_root.resolve()),str(pathlib.Path(__file__).resolve().parents[1])]
     sys.argv=[sys.argv[0],'--cpu','--use-pytorch-cross-attention','--disable-all-custom-nodes']
@@ -25,6 +26,16 @@ def main():
     import comfy.model_base
     import comfy.model_patcher
     import comfy.supported_models
+    if args.sampler_source_root:
+        import ast
+        import comfy.samplers
+        path=args.sampler_source_root.resolve()/'comfy/samplers.py'
+        tree=ast.parse(path.read_text())
+        cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='KSAMPLER')
+        method=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='sample')
+        namespace=dict(vars(comfy.samplers))
+        exec(compile(ast.Module(body=[method],type_ignores=[]),str(path),'exec'),namespace)
+        comfy.samplers.KSAMPLER.sample=namespace['sample']
     from comfy.weight_adapter.lora import LoRAAdapter
     from comfyui_spectrum_krea2.nodes import SpectrumApplyKrea2
     from comfyui_spectrum_krea2.runtime import CURRENT, REPORTS
@@ -40,11 +51,11 @@ def main():
     model=comfy.model_patcher.ModelPatcher(base,load_device=torch.device('cpu'),offload_device=torch.device('cpu'))
     node=SpectrumApplyKrea2()
     records=[]
-    def sample(patcher,noise,positive,negative,cfg,sampler,**kwargs):
+    def sample(patcher,noise,positive,negative,cfg,sampler,steps=12,**kwargs):
         reports=[]; token=REPORTS.set(reports)
         try:
             with torch.inference_mode():
-                result=comfy.sample.sample(patcher,noise,12,cfg,sampler,'simple',positive,negative,
+                result=comfy.sample.sample(patcher,noise,steps,cfg,sampler,'simple',positive,negative,
                                           torch.zeros_like(noise),disable_pbar=True,seed=42,**kwargs)
         finally:
             REPORTS.reset(token)
@@ -111,6 +122,14 @@ def main():
     torch.testing.assert_close(bypass,native,atol=0,rtol=0)
     assert reports[0]['forecast']==0 and 'external' in reports[0]['fallback']
     records.append({'external_wrapper':True,**reports[0]})
+    for steps in (8,12):
+        selected=node.apply(model,preset='turbo',warmup=1,tail=1)[0]
+        _,reports=sample(selected,noise,positive,negative,1.,'euler',steps=steps)
+        assert reports[0]['fallback'] is None
+        assert reports[0]['effective_config']['warmup']==1
+        assert reports[0]['effective_config']['tail']==1
+        assert reports[0]['forecast']>0
+        records.append({'turbo_steps':steps,**reports[0]})
     print(json.dumps({'full_native_cases':len(records),'records':records},sort_keys=True))
 
 

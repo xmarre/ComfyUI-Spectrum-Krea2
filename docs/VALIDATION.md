@@ -1,30 +1,22 @@
 # Validation evidence
 
-## Executed checks
+Validation uses small random Krea 2 weights on CPU. Real checkpoint images, CUDA performance, peak VRAM and image fidelity are unvalidated.
 
-Local validation used Python 3.12 on CPU with the audited ComfyUI source revision `7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe`. No Krea 2 model weights, text-encoder weights or GPU were available.
-
-| Check | Observed result | Scope |
+| Check | Executed result | Scope |
 | --- | --- | --- |
-| Numerical, component, lifecycle, node and workflow tests with PyTorch 2.10.0+cpu | **115 passed** | Complete final CPU suite, including repository-name import reproduction |
-| Earlier complete suite with PyTorch 2.15.0+cpu | **110 passed** before the final callback/accounting/entrypoint regression cases were added | Additional PyTorch version evidence; final full-host integration below uses 2.15 |
-| Full native ComfyUI integration with PyTorch 2.15.0+cpu | **12 cases passed** | Real ModelPatcher, CFGGuider, condition batching, Krea2 BaseModel transformations, native attention dispatch, native blocks and samplers; tiny random test weights |
-| Build | Source archive and wheel built successfully | Archive includes entrypoint, notices, test helpers, workflows, docs and tools; wheel includes both license documents |
-| CLI and image metrics smoke | Benchmark help and PSNR/SSIM comparison succeeded | Identical RGB pair produced SSIM 1 and the documented infinite-PSNR representation; no LPIPS execution |
-| Example graphs | UI/API pairing, links, seed widgets and deterministic regeneration passed | Six UI workflows and six corresponding API prompts; browser rendering not exercised |
+| Complete CPU suite, PyTorch 2.10 / Python 3.12 | 120 passed with each native sampler container | Numerical fitting, native components, branch/lifecycle isolation, workflow graphs and node entrypoints |
+| Full native ComfyUI CPU integration, PyTorch 2.15 | 14 cases passed with each native sampler container | Actual ModelPatcher, CFG batching, native BaseModel, modules and sampler updates |
+| Scale-locked integration | Eight- and twelve-step planner/target passes completed with and without Spectrum | Finite singleton-frame outputs; execution compatibility only |
+| Packaging | Source archive and wheel built | Entrypoint, source, notices, workflow examples and validation tools |
 
-The full-host integration covers eight Euler/DPM++ 2M combinations with CFG 1 or 4.5, batch one/two, odd non-square spatial sizes and native `index_timestep_zero` references; a standard native LoRA weight adapter and restoration; denoise 0.55; native Heun fallback; and preservation of an external diffusion wrapper's modified output. All-actual wrapper execution is bitwise native in these cases. Repeated accelerated runs are reproducible. In the tiny twelve-step accelerated cases, completed diffusion calls were nine actual plus three forecast; Heun fallback completed twenty-three native calls and zero forecasts. These counts are structural execution evidence, **not performance measurements**.
+The native Krea 2 model source is audited at ComfyUI `7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe`. Sampler-container coverage includes that revision and the earlier native KSAMPLER implementation at `135abed8da169e33ab0b86550e05e3ae55d6df8c`. The older whole revision predates native Krea 2; tests combine its unchanged sampler-container method with the current native model and host infrastructure. Both versions execute identical audited Euler and DPM++ 2M functions. Runtime admission checks the container API/bound entrypoint rather than unrelated callback logging source.
 
-Component-level tests additionally cover reference `index`, single-frame 5D and 4D layouts, BF16 projection parity, FP16/BF16 forecast accumulation, sliding memory bounds, separately evaluated CFG branches, changed UUID/layout/precision/weight identity, cancellation, native exceptions, nested callback samplers, missing identity, nonfinite predictions and unsupported options. Actual model calls preserve native output bitwise; projecting captured image rows alone uses dtype-appropriate tolerance because the GEMM row count differs.
+Full-host cases cover CFG 1 and 4.5, batch one/two, references, non-square odd spatial geometry, standard native LoRA application/restoration, truncated denoise, native Heun fallback, foreign wrapper preservation and Turbo warmup/tail settings. All-actual output is bitwise native; accelerated repeats are reproducible. With Turbo warmup 1/tail 1, the tiny eight-step test completes seven actual evaluations and one forecast; the twelve-step test completes eight actual evaluations and four forecasts, for both containers. These counts establish execution, not GPU speed or image quality.
 
-The reduced component fixture uses unchanged upstream model/sampler code with CPU host infrastructure substitutes, documented in `tests/native_components.py`. The separate `tests/full_comfy_smoke.py` uses real ComfyUI infrastructure and does not install those substitutes. Neither test loads real checkpoint weights or validates image-generation quality.
+The native-component fixture substitutes CPU host infrastructure, as documented in `tests/native_components.py`. `tests/full_comfy_smoke.py` separately runs actual ComfyUI infrastructure. Its `--sampler-source-root` option loads the earlier upstream container method for compatibility testing.
 
-## Review fixes
+Regression coverage distinguishes precondition rejection from corrupted prediction history: horizon misses retain genuine actual anchors, while nonfinite predictions clear them. Turbo respects explicit warmup and tail settings; the console report includes effective values. At least degree+1 actual anchors and numerical horizon bounds still apply.
 
-Review of the published PR diff resulted in callback isolation from trajectory context, consistent completed-call accounting, cleanup if hook registration fails, explicit native fallback for latent inpaint masks, and complete source-distribution contents. CI also exposed Python-version-dependent AST dump hashes; source contracts now use canonical semantic serialization and are explicitly audited in every matrix lane. GitHub's first CI run exposed entrypoint importing under a hyphenated repository directory; package and direct-import forms are now explicitly covered and the CI directory layout was reproduced locally. The fixes remain on the implementation PR.
+GitHub Actions tests Python 3.10/3.12/3.13, an additional earlier-container lane, and both full-host container variants. [PR checks](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/1/checks) show the current remote results.
 
-GitHub Actions runs the CPU contract suite on Python 3.10, 3.12 and 3.13 with CPU PyTorch 2.10, and a separate full-native CPU integration lane on Python 3.12/PyTorch 2.15. The [PR checks](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/1/checks) are authoritative for their current remote status. The normal suite requires `COMFYUI_ROOT` to point at the audited source checkout; CI provides it explicitly. The full-host script takes `--comfy-root` and needs the integration dependencies declared in the workflow.
-
-## Unverified
-
-Real RAW/Turbo images, image editing capability, CUDA/Blackwell behavior, reduced-weight loaders, attention-backend differences, peak GPU memory, sampler wall time and PSNR/SSIM/LPIPS on generated pairs remain unmeasured. The benchmark runner has not executed a real GPU generation. The defaults have not passed empirical acceptance. Use [GPU_VALIDATION.md](GPU_VALIDATION.md) and the paired examples to collect that evidence before promoting a profile or making quality/speed claims.
+Matched examples and the [GPU protocol](GPU_VALIDATION.md) remain the route to real-image acceptance. The benchmark runner has not executed GPU generation; no measured speedup, reduced-weight fidelity, perceptual quality or optimal default is claimed.

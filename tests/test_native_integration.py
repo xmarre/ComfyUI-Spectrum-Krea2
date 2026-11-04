@@ -266,3 +266,54 @@ def test_failed_native_call_is_not_counted_as_completed(native,monkeypatch):
     finally:
         CURRENT.reset(token)
     assert session.counts['actual']==0
+
+
+def test_turbo_early_warmup_builds_history_and_forecasts(native):
+    model=tiny_model(native[0])
+    _,report=run(model,Config(preset='turbo',warmup=1,tail=1),steps=8)
+    assert report['fallback'] is None and report['forecast']>0
+    assert report['actual']+report['forecast']==8
+    assert report['effective_config']['warmup']==1
+    assert report['effective_config']['tail']==1
+
+
+@pytest.mark.parametrize('nonfinite',[False,True])
+def test_prediction_failure_retains_only_valid_actual_history(native,monkeypatch,nonfinite):
+    from comfyui_spectrum_krea2.forecast import History, ForecastNonfinite
+    model=tiny_model(native[0])
+    x,t,c=inputs(model)
+    binding,session=setup_session(model,x,Config(warmup=0,tail=1))
+    token=CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            for step in range(2):
+                session.active_step=step
+                call(model,binding,x,t,c)
+            stream=next(iter(session.streams.values()))
+            assert len(stream.history.features)==2
+            def reject(*a,**kw):
+                raise (ForecastNonfinite if nonfinite else ForecastUnavailable)('rejected test prediction')
+            monkeypatch.setattr(History,'predict',reject)
+            session.active_step=2
+            call(model,binding,x,t,c)
+            assert len(stream.history.features)==(1 if nonfinite else 3)
+            assert session.counts['actual']==3
+    finally:
+        CURRENT.reset(token)
+
+
+def test_replaced_sampler_entrypoint_is_rejected(native):
+    from comfy.samplers import KSAMPLER
+    from comfy.k_diffusion import sampling
+    from comfyui_spectrum_krea2.sampling import validate_sampler
+    sampler=KSAMPLER(sampling.sample_euler)
+    executor=types.SimpleNamespace(class_obj=sampler,original=lambda *a:None)
+    reason=validate_sampler(executor,None,torch.linspace(1,0,5),{})
+    assert 'entrypoint' in reason
+
+
+def test_non_native_sampler_container_is_identified(native):
+    from comfyui_spectrum_krea2.sampling import validate_sampler
+    executor=types.SimpleNamespace(class_obj=object())
+    reason=validate_sampler(executor,None,torch.linspace(1,0,5),{})
+    assert reason=='unsupported sampler container: builtins.object'

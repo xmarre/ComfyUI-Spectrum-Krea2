@@ -38,6 +38,5 @@ class Config:
     def resolved(self):
         # No reliable RAW/Turbo distinction exists in native model metadata.
         if self.preset == "turbo":
-            return replace(self, warmup=max(4, self.warmup), tail=max(2, self.tail),
-                           window=min(1, self.window), growth=0.0)
+            return replace(self, window=min(1, self.window), growth=0.0)
         return self

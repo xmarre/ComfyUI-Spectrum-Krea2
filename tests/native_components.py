@@ -10,6 +10,7 @@ import ast
 import importlib
 import math
 import pathlib
+import os
 import sys
 import types
 import torch
@@ -82,7 +83,8 @@ def load(root):
         def __call__(self, x, sigma, **kw):
             return self.owner(x, sigma, kw.get('model_options', {}), kw.get('seed'))
 
-    samplers = extract('comfy.samplers', root/'comfy/samplers.py', {'KSAMPLER'},
+    sampler_root = pathlib.Path(os.environ.get('COMFYUI_SAMPLER_ROOT', root)).resolve()
+    samplers = extract('comfy.samplers', sampler_root/'comfy/samplers.py', {'KSAMPLER'},
                        {'Sampler': type('Sampler', (), {'max_denoise':lambda *args:True}),
                         'KSamplerX0Inpaint': Inpaint, 'torch':torch, 'detail':lambda *a,**k:None})
     return native, comfy, samplers

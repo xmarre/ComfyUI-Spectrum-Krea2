@@ -97,4 +97,7 @@ class Session:
         return {"actual": self.counts["actual"], "forecast": self.counts["forecast"],
                 "denoiser_calls": self.counts["actual"] + self.counts["forecast"],
                 "outer_steps": self.step, "peak_history_bytes": self.peak_history_bytes,
+                "effective_config": {"preset": self.config.preset, "warmup": self.config.warmup,
+                                     "tail": self.config.tail, "window": self.config.window,
+                                     "degree": self.config.degree},
                 "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons)}

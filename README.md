@@ -8,7 +8,7 @@ Based on **[Adaptive Spectral Feature Forecasting for Diffusion Sampling Acceler
 
 Version **0.1.0**, initial GPU-validation candidate. CPU tests exercise native Krea 2 model components and sampler source with small test weights. **Real Krea 2 checkpoint image quality, CUDA precision behavior and wall-clock acceleration are not yet validated.** Defaults are conservative engineering choices, not measured optima. Forecast counts measure computation avoided; they do not establish a speedup or fidelity.
 
-The audited ComfyUI revision is [`7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe`](https://github.com/Comfy-Org/ComfyUI/tree/7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe). The integration checks relevant source contracts rather than requiring that exact whole-repository version. Changed contracts produce an explicit native fallback. Requires Python 3.10+, PyTorch 2.4+, and native Krea 2 support in ComfyUI. No additional runtime dependency or compiled extension is introduced.
+The audited ComfyUI revision is [`7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe`](https://github.com/Comfy-Org/ComfyUI/tree/7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe). The integration checks the native sampler container by bound entrypoint and API, and checks model/solver source contracts rather than requiring that exact whole-repository version. Earlier native callback-container code is tested as well; logging changes alone do not disable forecasting. Changed contracts produce an explicit native fallback. Requires Python 3.10+, PyTorch 2.4+, and native Krea 2 support in ComfyUI. No additional runtime dependency or compiled extension is introduced.
 
 ## Install and use
 
@@ -51,10 +51,10 @@ Attention dispatch remains native. Unknown transformer wrappers fall back conser
 
 - **degree / ridge**: Chebyshev polynomial degree and ridge regularization. Default degree 1 requires two actual anchors. Higher degrees require more history and can trigger numerical bounds.
 - **warmup / tail**: initial/final actual outer steps. At least `degree + 1` actual observations are needed per conditioning stream.
-- **window / growth**: maximum consecutive forecasts between actual anchors. `window=0, growth=0` is an all-actual diagnostic. Growth is bounded at four forecasts; Turbo enforces at least four warmup and two tail steps, at most one forecast, and zero growth.
+- **window / growth**: maximum consecutive forecasts between actual anchors. `window=0, growth=0` is an all-actual diagnostic. Growth is bounded at four forecasts; Turbo caps the window at one forecast and disables growth. Both profiles respect the chosen warmup and tail; defaults are four and two.
 - **max_history / budget_mb**: sliding actual-only history. All conditioning streams share one retained-feature budget. Temporary snapshots, predictions, model activations and allocator reservations need additional memory.
 - **storage**: `vram` avoids history transfers; `system_ram` moves retained snapshots to CPU and incurs transfers when predicting. Neither option retains full FP32 feature-space coefficients.
-- **debug**: explain actual-evaluation reasons. Every sampler invocation emits a JSON summary with completed actual/forecast call counts and retained-history peak. Normal ComfyUI INFO logging must be enabled to see it.
+- **debug**: explain actual-evaluation reasons. Every sampler invocation emits a JSON summary with completed actual/forecast call counts, effective settings and retained-history peak. Normal ComfyUI INFO logging must be enabled to see it.
 
 Forecasts stay inside the full sampler's normalized sigma domain and no farther than half the retained actual-history span. Regression weight magnitude and nonfinite checks can force extra actual calls. This bounds extrapolation; it does not prove image fidelity.
 

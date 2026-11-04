@@ -13,6 +13,10 @@ class ForecastUnavailable(RuntimeError):
     pass
 
 
+class ForecastNonfinite(ForecastUnavailable):
+    """Prediction evidence is nonfinite and retained history must be discarded."""
+
+
 def chebyshev(x, degree):
     x = torch.as_tensor(x, dtype=torch.float64, device="cpu").reshape(-1, 1)
     columns = [torch.ones_like(x)]
@@ -107,5 +111,5 @@ class History:
         # One explicit synchronization is required to keep nonfinite predictions
         # out of the sampler. This is also checked after native output projection.
         if not bool(torch.isfinite(out).all()):
-            raise ForecastUnavailable("nonfinite predicted features")
+            raise ForecastNonfinite("nonfinite predicted features")
         return out

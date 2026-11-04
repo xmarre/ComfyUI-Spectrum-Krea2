@@ -5,7 +5,7 @@
 import contextvars
 import torch
 from .compat import native_model, verified
-from .forecast import ForecastUnavailable
+from .forecast import ForecastUnavailable, ForecastNonfinite
 from .runtime import CURRENT
 from .sampling import foreign_wrappers
 
@@ -71,7 +71,7 @@ def project(inner, feature, timesteps, x):
     if x.ndim == 5:
         out = out.unsqueeze(2)
     if not bool(torch.isfinite(out).all()):
-        raise ForecastUnavailable("nonfinite native projection of predicted features")
+        raise ForecastNonfinite("nonfinite native projection of predicted features")
     return out
 
 
@@ -116,7 +116,10 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
             # below are allowed to propagate unchanged.
             session.reason("forecast rejected: " + str(exc))
             prediction = None
-            stream.history.clear()
+            # A horizon/fit precondition miss does not invalidate real anchors.
+            # Keeping them lets the next actual call build enough fit span.
+            if not isinstance(exc, ForecastUnavailable) or isinstance(exc, ForecastNonfinite):
+                stream.history.clear()
         else:
             stream.last_step = step
             session.counts["forecast"] += 1
