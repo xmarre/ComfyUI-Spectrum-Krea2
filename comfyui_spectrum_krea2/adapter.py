@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 xmarre
+# Native output reconstruction adapted from ComfyUI, Copyright (C) 2024 Comfy.
 """Native Krea 2 capture and current-timestep projection, without a second DiT."""
 import contextvars
 import torch

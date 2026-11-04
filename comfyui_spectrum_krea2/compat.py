@@ -39,4 +39,12 @@ def model_contract(inner):
                "last.forward": type(inner.last).forward}
     if "forward" in inner.last.__dict__:
         return False
-    return all(verified(fn, key) for key, fn in methods.items())
+    if not all(verified(fn, key) for key, fn in methods.items()):
+        return False
+    for module in inner.modules():
+        if "forward" in module.__dict__ or module._forward_hooks or module._forward_pre_hooks:
+            return False
+        if type(module).__module__ == "comfy.ldm.krea2.model":
+            if not verified(type(module).forward, type(module).__name__ + ".forward"):
+                return False
+    return True
