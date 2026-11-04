@@ -4,14 +4,37 @@
 import ast
 import hashlib
 import inspect
+import json
 import textwrap
 from functools import lru_cache
 from .contracts import CONTRACTS
 
 
+def canonical_ast(node):
+    # ast.dump formatting and optional empty fields differ across Python minors.
+    # Retain every nonempty semantic field in an explicitly serialized schema.
+    if isinstance(node, ast.AST):
+        fields = {name: canonical_ast(value) for name, value in ast.iter_fields(node)
+                  if value is not None and value != []}
+        return {"node": type(node).__name__, "fields": fields}
+    if isinstance(node, list):
+        return [canonical_ast(value) for value in node]
+    if node is Ellipsis:
+        return {"literal": "ellipsis"}
+    if isinstance(node, bytes):
+        return {"literal": "bytes", "hex": node.hex()}
+    if isinstance(node, complex):
+        return {"literal": "complex", "real": node.real, "imag": node.imag}
+    return node
+
+
+def source_digest(source):
+    normalized = canonical_ast(ast.parse(textwrap.dedent(source)))
+    return hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def digest(function):
-    source = textwrap.dedent(inspect.getsource(function))
-    return hashlib.sha256(ast.dump(ast.parse(source), include_attributes=False).encode()).hexdigest()
+    return source_digest(inspect.getsource(function))
 
 
 @lru_cache(maxsize=64)

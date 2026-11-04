@@ -6,7 +6,7 @@ Local validation used Python 3.12 on CPU with the audited ComfyUI source revisio
 
 | Check | Observed result | Scope |
 | --- | --- | --- |
-| Numerical, component, lifecycle, node and workflow tests with PyTorch 2.10.0+cpu | **114 passed** | Complete final CPU suite, including repository-name import reproduction |
+| Numerical, component, lifecycle, node and workflow tests with PyTorch 2.10.0+cpu | **115 passed** | Complete final CPU suite, including repository-name import reproduction |
 | Earlier complete suite with PyTorch 2.15.0+cpu | **110 passed** before the final callback/accounting/entrypoint regression cases were added | Additional PyTorch version evidence; final full-host integration below uses 2.15 |
 | Full native ComfyUI integration with PyTorch 2.15.0+cpu | **12 cases passed** | Real ModelPatcher, CFGGuider, condition batching, Krea2 BaseModel transformations, native attention dispatch, native blocks and samplers; tiny random test weights |
 | Build | Source archive and wheel built successfully | Archive includes entrypoint, notices, test helpers, workflows, docs and tools; wheel includes both license documents |
@@ -21,7 +21,7 @@ The reduced component fixture uses unchanged upstream model/sampler code with CP
 
 ## Review fixes
 
-Review of the published PR diff resulted in callback isolation from trajectory context, consistent completed-call accounting, cleanup if hook registration fails, explicit native fallback for latent inpaint masks, and complete source-distribution contents. GitHub's first CI run exposed entrypoint importing under a hyphenated repository directory; package and direct-import forms are now explicitly covered and the CI directory layout was reproduced locally. The fixes remain on the implementation PR.
+Review of the published PR diff resulted in callback isolation from trajectory context, consistent completed-call accounting, cleanup if hook registration fails, explicit native fallback for latent inpaint masks, and complete source-distribution contents. CI also exposed Python-version-dependent AST dump hashes; source contracts now use canonical semantic serialization and are explicitly audited in every matrix lane. GitHub's first CI run exposed entrypoint importing under a hyphenated repository directory; package and direct-import forms are now explicitly covered and the CI directory layout was reproduced locally. The fixes remain on the implementation PR.
 
 GitHub Actions runs the CPU contract suite on Python 3.10, 3.12 and 3.13 with CPU PyTorch 2.10, and a separate full-native CPU integration lane on Python 3.12/PyTorch 2.15. The [PR checks](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/1/checks) are authoritative for their current remote status. The normal suite requires `COMFYUI_ROOT` to point at the audited source checkout; CI provides it explicitly. The full-host script takes `--comfy-root` and needs the integration dependencies declared in the workflow.
 

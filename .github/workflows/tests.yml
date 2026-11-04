@@ -30,7 +30,9 @@ jobs:
       - name: Run CPU numerical and native-component tests
         env:
           COMFYUI_ROOT: ${{ github.workspace }}/_comfy
-        run: python -m pytest -q
+        run: |
+          python tools/audit_contracts.py --comfy-root _comfy
+          python -m pytest -q
       - name: Check import, CLI and packaging
         run: |
           python -m compileall -q comfyui_spectrum_krea2 tools

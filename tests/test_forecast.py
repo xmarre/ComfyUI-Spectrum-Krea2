@@ -90,3 +90,14 @@ def test_invalid_config(change):
 def test_turbo_profile_limits():
     config=Config(preset='turbo',warmup=0,tail=1,window=4,growth=1).resolved()
     assert (config.warmup,config.tail,config.window,config.growth)==(4,2,1,0)
+
+
+def test_source_contract_ignores_optional_empty_ast_fields():
+    import ast
+    from comfyui_spectrum_krea2.compat import canonical_ast, source_digest
+    node=ast.parse('def f(x):\n    return x[..., 0]\n')
+    before=canonical_ast(node)
+    node.body[0].type_params=[]
+    assert canonical_ast(node)==before
+    # Meaningful source changes must still change the contract.
+    assert source_digest('def f(x): return x[..., 0]')!=source_digest('def f(x): return x[..., 1]')
