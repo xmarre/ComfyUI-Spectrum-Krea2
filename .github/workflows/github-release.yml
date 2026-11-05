@@ -1,0 +1,47 @@
+name: Publish Spectrum Krea 2 GitHub prerelease
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build source archive and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Read package version
+        id: package
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          notes="docs/releases/${tag}.md"
+          test -s "${notes}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "GitHub Release ${tag} already exists; leaving it unchanged"
+            exit 0
+          fi
+          gh release create "${tag}" dist/*.whl dist/*.tar.gz --target "${GITHUB_SHA}" --title "Spectrum Krea 2 ${tag} (experimental)" --notes-file "${notes}" --prerelease

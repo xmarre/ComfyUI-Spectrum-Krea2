@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Canonical AST SHA-256 contracts: ComfyUI 7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe
+CONTRACTS = {'Attention.forward': '3274db378604ea1861609ee6993e82cddd2e45a6eda26f8212c3e40cf08a3ad4',
+ 'DoubleSharedModulation.forward': '160dcfda128c0ed32a5899fd5a2ab19a7967e9287d8bee91b9832e565f609cda',
+ 'LastLayer.forward': '242e83a24e9367886afe8b60a8f3b2bcb69215a1bee1c3505702f7287f4927ea',
+ 'QKNorm.forward': 'd55d212e75188bd0b5b649e892ef8e3872d4497c7b8a890f0c425153a75dfab8',
+ 'RMSNorm.forward': '6c6e6c35542a0f0941f07ee1465dca5a9d6e61d0f2cacdc0aea2624b92a7964f',
+ 'SimpleModulation.forward': 'e21b69627ba016a05cb528ce5c54263f31f7e96427608d7070ce98bdaebff006',
+ 'SingleStreamBlock.forward': '2f8f6951c74b0fbeaf33c2308c9cc5c39e32e04775f8aafaa7dea4d9ce855287',
+ 'SingleStreamDiT.forward': 'cb9e9068a4ff737b55f9b5aea027019cd8548bbfb59dfc3ef234c75dcd240f20',
+ 'SwiGLU.forward': '8d77d52c0e5aab34a669108505ae537ae99519fcd214d02aa5605103043ef227',
+ 'TextFusionBlock.forward': 'd24ecf5af4b7b041692c22d43c53f91700b3c3a8317accf84d3dbb41855b4ef6',
+ 'TextFusionTransformer.forward': 'ca547fd13459d384619995d6434dfc0447e5eb0aa4d4bc06109de0739a91302a',
+ 'last.forward': '242e83a24e9367886afe8b60a8f3b2bcb69215a1bee1c3505702f7287f4927ea',
+ 'model._forward': 'caf72baee7a658e24991e6e2a26f662508ccd23f69a4162b0c3207cd567ef689',
+ 'model._unpack_context': '15ac871d211aedc9aeed0d76e4146d87c4f26c69b995ac23483fade74083a625',
+ 'model.forward': 'cb9e9068a4ff737b55f9b5aea027019cd8548bbfb59dfc3ef234c75dcd240f20',
+ 'model.process_img': 'd9f004d4147a4820468608755c6135a372fc238f0fcd37ab2c827ade5a57ebdd',
+ 'native.sample_dpmpp_2m': '6c27fbb134285b20c469d3f79134b092563b269ee9b8ceb9059a7c65fbe8e20d',
+ 'native.sample_euler': '09d6f4e8d7ea6d138f51847efbc4945ed5a69674b8f4edaab75ef48a4c0acc5e',
+ 'native.timestep_embedding': '69ab1a76dd6a26f3fb5482094242537eb16452edb44ddb305411e4f95d6a369b',
+ 'sampler.sample': '4705d96a2f040e1d953ead0acb41360ddf0b03d008eaff57e1d0a53b2dc43f9f'}

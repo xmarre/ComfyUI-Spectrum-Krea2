@@ -1,0 +1,27 @@
+name: Publish Spectrum Krea 2 to Comfy registry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  publish-node:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY_ACCESS_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish Custom Node
+        if: env.REGISTRY_ACCESS_TOKEN != ''
+        uses: Comfy-Org/publish-node-action@v1
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+      - name: Report missing registry token
+        if: env.REGISTRY_ACCESS_TOKEN == ''
+        run: echo "::warning::REGISTRY_ACCESS_TOKEN is not configured for this repository; Comfy registry publication was skipped."

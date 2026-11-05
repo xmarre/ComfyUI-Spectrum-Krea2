@@ -1,0 +1,1 @@
+# ComfyUI provides PyTorch; no additional runtime packages are required.
