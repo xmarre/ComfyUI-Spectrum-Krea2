@@ -81,7 +81,7 @@ def test_history_alias_is_explicit_ownership_contract():
         h.observe(-.5,torch.ones(2,2,3))
 
 
-@pytest.mark.parametrize('change', [dict(degree=0),dict(degree=5),dict(ridge=float('nan')),dict(max_history=1),dict(window=5),dict(growth=float('inf')),dict(tail=0),dict(storage='auto'),dict(budget_mb=0)])
+@pytest.mark.parametrize('change', [dict(degree=0),dict(degree=5),dict(ridge=float('nan')),dict(max_history=1),dict(window=5),dict(growth=float('inf')),dict(tail=0),dict(storage='auto'),dict(budget_mb=0),dict(bootstrap=1)])
 def test_invalid_config(change):
     with pytest.raises(ValueError):
         Config(**change)
@@ -101,3 +101,20 @@ def test_source_contract_ignores_optional_empty_ast_fields():
     assert canonical_ast(node)==before
     # Meaningful source changes must still change the contract.
     assert source_digest('def f(x): return x[..., 0]')!=source_digest('def f(x): return x[..., 1]')
+
+
+def test_one_point_hold_is_an_owned_copy_of_the_only_anchor():
+    h=History(Config())
+    with pytest.raises(ForecastUnavailable):
+        h.predict_hold('cpu',torch.float32)
+    feature=torch.randn(1,4,3)
+    h.observe(-1.,feature)
+    held=h.predict_hold('cpu',torch.float32)
+    torch.testing.assert_close(held,feature,atol=0,rtol=0)
+    assert held.data_ptr()!=h.features[0].data_ptr()
+    h.observe(-.5,feature)
+    with pytest.raises(ForecastUnavailable):
+        h.predict_hold('cpu',torch.float32)
+    bad=History(Config()); bad.observe(-1.,torch.full((1,2),float('nan')))
+    with pytest.raises(ForecastUnavailable):
+        bad.predict_hold('cpu',torch.float32)

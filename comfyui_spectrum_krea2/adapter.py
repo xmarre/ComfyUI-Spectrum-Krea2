@@ -106,10 +106,15 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
     if stream.last_step >= step:
         stream.history.clear()
         session.reason("repeated branch evaluation at one outer step")
-    if session.should_forecast(stream):
+    mode = session.forecast_mode(stream)
+    if mode is not None:
         prediction = None
         try:
-            prediction = stream.history.predict(session.coordinates[step], x.device, stream.history.features[-1].dtype)
+            dtype = stream.history.features[-1].dtype
+            if mode == "bootstrap":
+                prediction = stream.history.predict_hold(x.device, dtype)
+            else:
+                prediction = stream.history.predict(session.coordinates[step], x.device, dtype)
             output = project(inner, prediction, timesteps, x)
         except (ForecastUnavailable, RuntimeError) as exc:
             # Retry only forecast-owned work. Errors from the native denoiser
@@ -123,6 +128,8 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         else:
             stream.last_step = step
             session.counts["forecast"] += 1
+            if mode == "bootstrap":
+                session.counts["bootstrap"] += 1
             return output
 
     capture_id = object()

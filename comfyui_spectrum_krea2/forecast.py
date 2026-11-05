@@ -97,6 +97,19 @@ class History:
             raise ForecastUnavailable("unstable regression weights")
         return weights
 
+    def predict_hold(self, device, dtype):
+        """One-point bootstrap: reuse the only actual feature at the next step.
+
+        The caller projects it with the current timestep, so only the
+        transformer features are held, not the model output.
+        """
+        if len(self.features) != 1:
+            raise ForecastUnavailable("one-point bootstrap requires exactly one actual anchor")
+        out = self.features[0].to(device=device, dtype=dtype, copy=True)
+        if not bool(torch.isfinite(out).all()):
+            raise ForecastNonfinite("nonfinite predicted features")
+        return out
+
     def predict(self, coordinate, device, dtype):
         weights = self.weights(coordinate).tolist()
         shape = self.features[-1].shape

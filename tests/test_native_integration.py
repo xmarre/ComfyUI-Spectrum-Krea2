@@ -183,7 +183,7 @@ def test_native_error_propagates_and_hook_cleanup(native,monkeypatch):
 def test_call_identity_changes_do_not_reuse_history(native,changed):
     model=tiny_model(native[0])
     x,t,c=inputs(model)
-    binding,session=setup_session(model,x,Config(warmup=0,tail=1,ridge=0))
+    binding,session=setup_session(model,x,Config(warmup=0,tail=1,ridge=0,bootstrap=False))
     opts={'uuids':[uuid.UUID(int=1)],'cond_or_uncond':[0]}
     token=CURRENT.set(session)
     try:
@@ -282,7 +282,7 @@ def test_prediction_failure_retains_only_valid_actual_history(native,monkeypatch
     from comfyui_spectrum_krea2.forecast import History, ForecastNonfinite
     model=tiny_model(native[0])
     x,t,c=inputs(model)
-    binding,session=setup_session(model,x,Config(warmup=0,tail=1))
+    binding,session=setup_session(model,x,Config(warmup=0,tail=1,bootstrap=False))
     token=CURRENT.set(session)
     try:
         with torch.no_grad():
@@ -347,3 +347,39 @@ def test_signature_introspection_failure_only_affects_diagnostics(native,monkeyp
         _,report=run(model,Config(preset='turbo',warmup=1,tail=1,debug=True))
     assert report['fallback'] is None and report['forecast']>0
     assert 'signature=<unavailable>' in caplog.text
+
+
+def test_bootstrap_holds_first_actual_features_at_second_step(native):
+    model=tiny_model(native[0])
+    x,t0,c=inputs(model)
+    binding,session=setup_session(model,x,Config(warmup=1,tail=1))
+    token=CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            session.active_step=0
+            call(model,binding,x,t0,c)
+            stream=next(iter(session.streams.values()))
+            held=stream.history.features[0].clone()
+            session.active_step=1
+            t1=torch.full_like(t0,.55)
+            output=call(model,binding,x,t1,c)
+            # The held transformer features are projected with the current timestep.
+            torch.testing.assert_close(output,project(model,held,t1,x),atol=0,rtol=0)
+            assert session.counts['forecast']==1 and session.counts['bootstrap']==1
+            assert len(stream.history.features)==1  # forecasts never enter history
+            session.active_step=2
+            call(model,binding,x,t1,c)
+            assert session.counts['actual']==2
+    finally:
+        CURRENT.reset(token)
+
+
+def test_bootstrap_adds_the_second_step_forecast_to_short_turbo_runs(native):
+    model=tiny_model(native[0])
+    _,without=run(model,Config(preset='turbo',warmup=1,tail=1,bootstrap=False),steps=8)
+    _,with_bootstrap=run(model,Config(preset='turbo',warmup=1,tail=1),steps=8)
+    assert with_bootstrap['fallback'] is None
+    assert with_bootstrap['bootstrap_forecast']==1 and without['bootstrap_forecast']==0
+    assert with_bootstrap['effective_config']['bootstrap'] is True
+    assert with_bootstrap['forecast']>=without['forecast']+1
+    assert with_bootstrap['actual']+with_bootstrap['forecast']==8

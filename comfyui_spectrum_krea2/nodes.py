@@ -24,6 +24,9 @@ class SpectrumApplyKrea2:
             "storage": (["vram", "system_ram"], {"tooltip": "VRAM avoids feature transfers. System RAM trades bandwidth for device memory."}),
             "budget_mb": ("INT", {"default": 4096, "min": 64, "max": 65536, "step": 64, "tooltip": "Total retained feature budget across all conditioning streams; temporary tensors require additional memory."}),
             "debug": ("BOOLEAN", {"default": False}),
+        }, "optional": {
+            "bootstrap": ("BOOLEAN", {"default": True, "tooltip": "Forecast the second outer step by holding the first actual "
+                                      "step's features, as Spectrum H3 does. Applies with degree 1, warmup 0 or 1 and window 1 or more."}),
         }}
 
     RETURN_TYPES = ("MODEL",)
@@ -33,7 +36,7 @@ class SpectrumApplyKrea2:
 
     def apply(self, model, enabled=True, preset="raw", degree=1, ridge=0.01,
               warmup=4, tail=2, window=1, growth=0.0, max_history=8,
-              storage="vram", budget_mb=4096, debug=False):
+              storage="vram", budget_mb=4096, debug=False, bootstrap=True):
         from comfy.patcher_extension import WrappersMP
         types = (WrappersMP.SAMPLER_SAMPLE, WrappersMP.PREDICT_NOISE, WrappersMP.DIFFUSION_MODEL)
         installed = any(model.get_wrappers(t, KEY) for t in types)
@@ -47,7 +50,7 @@ class SpectrumApplyKrea2:
         if not native_model(getattr(getattr(model, "model", None), "diffusion_model", None)):
             raise ValueError("Spectrum Apply Krea 2 requires ComfyUI's native Krea 2 MODEL")
         config = Config(enabled, preset, degree, ridge, warmup, tail, window, growth,
-                        max_history, storage, budget_mb, debug)
+                        max_history, storage, budget_mb, debug, bool(bootstrap))
         binding = Binding(config)
         cloned.add_wrapper_with_key(types[0], KEY, binding.sampler)
         cloned.add_wrapper_with_key(types[1], KEY, binding.predict)

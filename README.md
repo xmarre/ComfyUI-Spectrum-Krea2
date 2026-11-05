@@ -51,6 +51,7 @@ Attention dispatch remains native. Unknown transformer wrappers fall back conser
 
 - **degree / ridge**: Chebyshev polynomial degree and ridge regularization. Default degree 1 requires two actual anchors. Higher degrees require more history and can trigger numerical bounds.
 - **warmup / tail**: initial/final actual outer steps. At least `degree + 1` actual observations are needed per conditioning stream.
+- **bootstrap** (default on): with degree 1, warmup 0 or 1 and window of at least 1, the second outer step is forecast from the first actual step alone by holding its transformer features and projecting them with the current timestep, as Spectrum H3 does. Without it, the first forecast needs two actual anchors. The report counts these as `bootstrap_forecast`.
 - **window / growth**: maximum consecutive forecasts between actual anchors. `window=0, growth=0` is an all-actual diagnostic. Growth is bounded at four forecasts; Turbo caps the window at one forecast and disables growth. Both profiles respect the chosen warmup and tail; defaults are four and two.
 - **max_history / budget_mb**: sliding actual-only history. All conditioning streams share one retained-feature budget. Temporary snapshots, predictions, model activations and allocator reservations need additional memory.
 - **storage**: `vram` avoids history transfers; `system_ram` moves retained snapshots to CPU and incurs transfers when predicting. Neither option retains full FP32 feature-space coefficients.

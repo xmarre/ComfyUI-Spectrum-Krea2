@@ -62,18 +62,25 @@ class Session:
             self.streams[key] = Stream(History(self.config))
         return self.streams[key]
 
-    def should_forecast(self, stream):
+    def forecast_mode(self, stream):
+        """None for an actual call, else "bootstrap" or "regression"."""
         step = self.active_step
         if step is None or stream.last_step >= step:
-            return False
-        if step < max(self.config.warmup, self.config.degree + 1):
-            return False
+            return None
         if step >= len(self.coordinates) - self.config.tail:
-            return False
+            return None
+        if (self.config.bootstrap_active and step == 1 and step >= self.config.warmup
+                and stream.last_actual == 0 and len(stream.history.features) == 1):
+            return "bootstrap"
+        if step < max(self.config.warmup, self.config.degree + 1):
+            return None
         if len(stream.history.features) < self.config.degree + 1:
-            return False
+            return None
         window = min(4, self.config.window + math.floor(self.config.growth * stream.actual_anchors))
-        return step - stream.last_actual <= window
+        return "regression" if step - stream.last_actual <= window else None
+
+    def should_forecast(self, stream):
+        return self.forecast_mode(stream) is not None
 
     def observe(self, stream, feature):
         budget = self.config.budget_mb * 1024 * 1024
@@ -97,7 +104,9 @@ class Session:
         return {"actual": self.counts["actual"], "forecast": self.counts["forecast"],
                 "denoiser_calls": self.counts["actual"] + self.counts["forecast"],
                 "outer_steps": self.step, "peak_history_bytes": self.peak_history_bytes,
+                "bootstrap_forecast": self.counts["bootstrap"],
                 "effective_config": {"preset": self.config.preset, "warmup": self.config.warmup,
                                      "tail": self.config.tail, "window": self.config.window,
-                                     "degree": self.config.degree},
+                                     "degree": self.config.degree,
+                                     "bootstrap": self.config.bootstrap_active},
                 "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons)}

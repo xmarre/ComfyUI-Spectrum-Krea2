@@ -18,6 +18,7 @@ class Config:
     storage: str = "vram"
     budget_mb: int = 4096
     debug: bool = False
+    bootstrap: bool = True
 
     def __post_init__(self):
         if self.preset not in {"raw", "turbo"}:
@@ -34,6 +35,14 @@ class Config:
             raise ValueError("warmup must be in [0, 100] and tail in [1, 100]")
         if self.storage not in {"vram", "system_ram"} or not 64 <= self.budget_mb <= 65536:
             raise ValueError("Invalid history storage or memory budget")
+        if not isinstance(self.bootstrap, bool):
+            raise ValueError("bootstrap must be a boolean")
+
+    @property
+    def bootstrap_active(self):
+        # The one-point hold replaces a degree-1 fit at the second outer step.
+        # A longer warmup already covers that step; window 0 is all-actual.
+        return self.bootstrap and self.degree == 1 and self.warmup <= 1 and self.window >= 1
 
     def resolved(self):
         # No reliable RAW/Turbo distinction exists in native model metadata.
