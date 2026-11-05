@@ -4,7 +4,7 @@ Validation uses small random Krea 2 weights on CPU. Real checkpoint images, CUDA
 
 | Check | Executed result | Scope |
 | --- | --- | --- |
-| Complete CPU suite, PyTorch 2.10 / Python 3.12 | 124 passed with each native sampler container | Numerical fitting, native components, branch/lifecycle isolation, workflow graphs and node entrypoints |
+| Complete CPU suite, PyTorch 2.10 / Python 3.12 | 136 passed on current native sampler container (2026-11-05 CI); earlier-container lane also passed | Numerical fitting, native components, branch/lifecycle isolation, workflow graphs and node entrypoints |
 | Full native ComfyUI CPU integration, PyTorch 2.15 | 16 cases passed with each native sampler container | Actual ModelPatcher, CFG batching, native BaseModel, modules and sampler updates |
 | Scale-locked integration | Eight- and twelve-step planner/target passes completed with and without Spectrum | Finite singleton-frame outputs; execution compatibility only |
 | Packaging | Source archive and wheel built | Entrypoint, source, notices, workflow examples and validation tools |
