@@ -15,6 +15,7 @@ REPORTS = contextvars.ContextVar("spectrum_krea2_reports", default=None)
 @dataclass
 class Stream:
     history: History
+    route: str | None = None
     last_step: int = -1
     last_actual: int = -1
     actual_anchors: int = 0
@@ -38,6 +39,7 @@ class Session:
     disabled_reason: str | None = None
     peak_history_bytes: int = 0
     weight_owner: object = None
+    patch_policy: object = None
 
     def disable(self, reason):
         if self.disabled_reason is None:
@@ -108,5 +110,7 @@ class Session:
                 "effective_config": {"preset": self.config.preset, "warmup": self.config.warmup,
                                      "tail": self.config.tail, "window": self.config.window,
                                      "degree": self.config.degree,
-                                     "bootstrap": self.config.bootstrap_active},
+                                     "bootstrap": self.config.bootstrap_active,
+                                     "extrapolation_guard_enabled": self.config.extrapolation_guard_enabled,
+                                     "max_extrapolation_span_ratio": self.config.max_extrapolation_span_ratio},
                 "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons)}

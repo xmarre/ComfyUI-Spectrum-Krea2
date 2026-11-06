@@ -72,7 +72,10 @@ class Owner:
         self.options=options
         self.context=context
         self.split=split
-        self.model_patcher=types.SimpleNamespace(model=types.SimpleNamespace())
+        self.model_patcher=types.SimpleNamespace(
+            model=types.SimpleNamespace(),
+            get_model_object=lambda name: types.SimpleNamespace(noise_scale=1.0),
+        )
         self.inner_model=types.SimpleNamespace(diffusion_model=model,current_weight_patches_uuid='weights',
              model_sampling=types.SimpleNamespace(noise_scaling=lambda sigma,noise,latent,max_denoise: noise,
                                                  inverse_noise_scaling=lambda sigma,x:x))
@@ -114,7 +117,11 @@ def run(model, config=None, steps=12, split=False, sigmas=None, options=None, ca
     return result,reports[0]
 
 
-@pytest.mark.parametrize('sampler_name',['sample_euler','sample_dpmpp_2m'])
+@pytest.mark.parametrize('sampler_name',[
+    'sample_euler', 'sample_dpmpp_2m',
+    'sample_res_multistep', 'sample_gradient_estimation',
+    'sample_deis', 'sample_ipndm', 'sample_ipndm_v',
+])
 @pytest.mark.parametrize('split',[False,True])
 def test_real_sampler_forecasts_and_fresh_runs(native,sampler_name,split):
     model=tiny_model(native[0])
@@ -383,3 +390,227 @@ def test_bootstrap_adds_the_second_step_forecast_to_short_turbo_runs(native):
     assert with_bootstrap['effective_config']['bootstrap'] is True
     assert with_bootstrap['forecast']>=without['forecast']+1
     assert with_bootstrap['actual']+with_bootstrap['forecast']==8
+
+
+
+@pytest.mark.parametrize("route_sequence, expected_reasons", [
+    # Predicted and observed dense->Sol change is one transition event.
+    (("dense", "sol", "sol"), {"numerical attention backend transition": 1}),
+    # A routing prediction that fails remains observable as a distinct event.
+    (("dense", "dense"), {
+        "numerical attention backend transition": 1,
+        "numerical attention route differed from the previous anchor": 1,
+    }),
+])
+def test_sol_attention_route_history_invalidation_is_single_event(
+        native, monkeypatch, route_sequence, expected_reasons):
+    import comfyui_spectrum_krea2.adapter as adapter
+
+    model = tiny_model(native[0])
+    x, t, context = inputs(model)
+    binding, session = setup_session(
+        model, x, Config(preset="turbo", warmup=2, tail=1, bootstrap=False),
+    )
+    # This test is about the adapter's route reconciliation, not the
+    # qualification of a separately installed attention patch.
+    monkeypatch.setattr(adapter, "matches", lambda policy, options: True)
+
+    class SimulatedSol:
+        def phase(self, x, context, refs, inner):
+            return "dense" if session.counts["actual"] == 0 else "sol"
+
+        def sol_status(self):
+            count = session.counts["actual"]
+            # First native call is dense. Later calls may or may not actually
+            # use Sol; the mismatch case intentionally forces a dense result.
+            realized = route_sequence[min(count, len(route_sequence) - 1)]
+            return {
+                "actual_evaluations": count,
+                "sparse_calls": sum(1 for route in route_sequence[:count] if route == "sol"),
+            }
+
+    session.patch_policy = SimulatedSol()
+    key = {"uuids": [uuid.UUID(int=1)], "cond_or_uncond": [0]}
+    token = CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            for step in range(len(route_sequence)):
+                session.active_step = step
+                call(model, binding, x, t, context, options=key)
+                stream = next(iter(session.streams.values()))
+                # Never retain features from the old numerical attention
+                # route once the first Sol actual has been witnessed.
+                if step == 1:
+                    assert len(stream.history.features) == 1
+                    assert stream.actual_anchors == 1
+            assert session.counts["actual"] == len(route_sequence)
+            for reason, count in expected_reasons.items():
+                assert session.reasons[reason] == count
+            assert sum(
+                count for reason, count in session.reasons.items()
+                if reason.startswith("numerical attention")
+            ) == sum(expected_reasons.values())
+            assert session.disabled_reason is None
+    finally:
+        CURRENT.reset(token)
+    assert not model.last._forward_pre_hooks
+
+
+
+@pytest.mark.parametrize('remaining,expected_default,expected_relaxed', [
+    (7, 1, 2),
+    (8, 2, 3),
+])
+def test_krea_simple_high_resolution_schedule_guard_toggle(
+        native, remaining, expected_default, expected_relaxed):
+    # This is the native 18-step simple-scheduler tail used by
+    # composition-lock handoffs, at 0.70 (7) and 0.72 (8).
+    # ComfyUI's ModelSamplingFlux uses mu=1.15 and a 10,000-element
+    # shifted sigma table. The native 'simple' scheduler reads table entries
+    # from the end at int(i * 10000/18). Reproduce those exact FP32 values
+    # here without importing unrelated ComfyUI host dependencies.
+    import math
+    shift = math.exp(1.15)
+    full = []
+    for i in range(18):
+        t = (10000 - int(i * (10000 / 18))) / 10000
+        full.append(shift * t / (1 - t + shift * t))
+    full = torch.tensor(full + [0.], dtype=torch.float32)
+    sigmas = full[-(remaining + 1):]
+    model = tiny_model(native[0])
+    baseline_config = dict(preset='turbo', warmup=2, tail=1,
+                           window=1, bootstrap=False)
+    reports = {}
+    for name, overrides in (
+        ('default', {}),
+        ('relaxed', {'max_extrapolation_span_ratio': 1.5}),
+        ('disabled', {'extrapolation_guard_enabled': False}),
+    ):
+        _, report = run(model, Config(**baseline_config, **overrides),
+                        steps=remaining, sigmas=sigmas)
+        assert report['fallback'] is None, report
+        assert report['outer_steps'] == remaining, report
+        assert report['actual'] + report['forecast'] == remaining, report
+        assert report['bootstrap_forecast'] == 0, report
+        assert report['effective_config']['extrapolation_guard_enabled'] == (
+            name != 'disabled')
+        assert report['effective_config']['max_extrapolation_span_ratio'] == (
+            1.5 if name == 'relaxed' else 0.5)
+        assert report['actual_reasons'].get('numerical attention backend transition', 0) == 0
+        reports[name] = report
+    assert reports['default']['forecast'] == expected_default, reports
+    assert reports['relaxed']['forecast'] == expected_relaxed, reports
+    assert reports['disabled']['forecast'] == expected_relaxed, reports
+    assert reports['default']['actual_reasons'].get(
+        'forecast rejected: extrapolation exceeds half the retained history span') == 2
+    for name in ('relaxed', 'disabled'):
+        assert not any('extrapolation exceeds' in reason
+                       for reason in reports[name]['actual_reasons'])
+
+
+
+@pytest.mark.parametrize('sampler_name', ['sample_res_multistep', 'sample_gradient_estimation',
+    'sample_deis', 'sample_ipndm', 'sample_ipndm_v'])
+def test_new_solver_exact_native_parity_when_forecasting_disabled(native, sampler_name):
+    model = tiny_model(native[0])
+    torch.manual_seed(31415)
+    original, _ = run(model, Config(window=0), steps=20, sampler_name=sampler_name)
+    torch.manual_seed(31415)
+    actual, report = run(model, Config(preset='turbo', warmup=2, tail=1,
+                                      window=0, extrapolation_guard_enabled=False),
+                         steps=20, sampler_name=sampler_name)
+    torch.testing.assert_close(actual, original, atol=0, rtol=0)
+    assert report['fallback'] is None and report['forecast'] == 0
+    assert report['actual'] == 20
+
+
+@pytest.mark.parametrize('sampler_name,options', [
+    ('sample_res_multistep', {'noise_sampler': object()}),
+    ('sample_res_multistep', {'s_noise': 2.0}),
+    ('sample_gradient_estimation', {'cfg_pp': True}),
+    ('sample_gradient_estimation', {'ge_gamma': 1.0}),
+    ('sample_deis', {'max_order': 2}),
+    ('sample_deis', {'deis_mode': 'rhoab'}),
+    ('sample_ipndm', {'max_order': 2}),
+    ('sample_ipndm_v', {'max_order': 3}),
+])
+def test_solver_parameter_overrides_are_native_fallback(native, sampler_name, options):
+    from comfy.samplers import KSAMPLER
+    from comfy.k_diffusion import sampling
+    from comfyui_spectrum_krea2.sampling import validate_sampler
+    sampler = KSAMPLER(getattr(sampling, sampler_name), extra_options=options)
+    executor = types.SimpleNamespace(class_obj=sampler, original=sampler.sample)
+    assert validate_sampler(executor, None, torch.linspace(1, 0, 4),
+                            {'model_options': {}}) == 'unverified sampler options'
+
+
+def test_res_delegate_source_mismatch_disables_forecasting(native, monkeypatch):
+    from comfy.samplers import KSAMPLER
+    from comfy.k_diffusion import sampling
+    from comfyui_spectrum_krea2.sampling import validate_sampler
+    sampler = KSAMPLER(sampling.sample_res_multistep)
+    executor = types.SimpleNamespace(class_obj=sampler, original=sampler.sample)
+    monkeypatch.setattr(sampling, 'res_multistep', lambda *args, **kw: None)
+    assert validate_sampler(executor, None, torch.linspace(1, 0, 4),
+                            {'model_options': {}}) == 'native RES Multistep solver source contract changed'
+
+
+@pytest.mark.parametrize('sampler_name', ['sample_res_multistep', 'sample_gradient_estimation',
+    'sample_deis', 'sample_ipndm', 'sample_ipndm_v'])
+def test_new_solver_20_step_turbo_forecast_counts(native, sampler_name):
+    model = tiny_model(native[0])
+    config = Config(preset='turbo', warmup=2, tail=1,
+                    extrapolation_guard_enabled=False, bootstrap=False)
+    _, report = run(model, config, steps=20, sampler_name=sampler_name)
+    assert report['fallback'] is None, report
+    assert report['actual'] == 11 and report['forecast'] == 9, report
+    _, second = run(model, config, steps=20, sampler_name=sampler_name)
+    assert second['actual'] == report['actual']
+    assert second['forecast'] == report['forecast']
+    assert CURRENT.get() is None and not model.last._forward_pre_hooks
+
+
+
+def test_legacy_native_without_new_solvers_remains_compatible(native, monkeypatch):
+    from comfy.k_diffusion import sampling
+    for name in ("sample_res_multistep", "sample_gradient_estimation",
+                 "res_multistep", "sample_deis", "sample_ipndm", "sample_ipndm_v"):
+        monkeypatch.delattr(sampling, name, raising=False)
+    model = tiny_model(native[0])
+    _, report = run(model, Config(preset='turbo', warmup=2, tail=1,
+                                  extrapolation_guard_enabled=False),
+                    steps=12, sampler_name="sample_euler")
+    assert report['fallback'] is None, report
+    assert report['forecast'] > 0
+
+
+
+@pytest.mark.parametrize("helper_name", [
+    "get_deis_coeff_list", "edm2t", "cal_poly", "cal_intergrand", "t2alpha_fn",
+])
+def test_deis_coefficient_contract_mismatch_fails_closed(native, monkeypatch, helper_name):
+    from comfy.samplers import KSAMPLER
+    from comfy.k_diffusion import sampling
+    from comfyui_spectrum_krea2.sampling import validate_sampler
+    monkeypatch.setattr(sampling.deis, helper_name, lambda *a, **kw: None)
+    sampler = KSAMPLER(sampling.sample_deis)
+    executor = types.SimpleNamespace(class_obj=sampler, original=sampler.sample)
+    reason = validate_sampler(executor, None, torch.linspace(1, 0, 4),
+                              {"model_options": {}})
+    assert reason == "native DEIS coefficient source contract changed"
+
+
+@pytest.mark.parametrize("sampler_name", ["sample_deis", "sample_ipndm", "sample_ipndm_v"])
+def test_alternative_multistep_solvers_20_step_determinism_and_parity(native, sampler_name):
+    model = tiny_model(native[0])
+    cfg = Config(preset="turbo", warmup=2, tail=1, bootstrap=False,
+                 extrapolation_guard_enabled=False)
+    torch.manual_seed(724)
+    output, report = run(model, cfg, steps=20, sampler_name=sampler_name)
+    assert report["fallback"] is None, report
+    assert (report["actual"], report["forecast"]) == (11, 9), report
+    torch.manual_seed(724)
+    repeat, repeated = run(model, cfg, steps=20, sampler_name=sampler_name)
+    torch.testing.assert_close(repeat, output, atol=0, rtol=0)
+    assert repeated["actual"] == 11 and repeated["forecast"] == 9
+    assert not model.last._forward_pre_hooks and CURRENT.get() is None
