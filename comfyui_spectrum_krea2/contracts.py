@@ -18,5 +18,8 @@ CONTRACTS = {'Attention.forward': '3274db378604ea1861609ee6993e82cddd2e45a6eda26
  'model.process_img': 'd9f004d4147a4820468608755c6135a372fc238f0fcd37ab2c827ade5a57ebdd',
  'native.sample_dpmpp_2m': '6c27fbb134285b20c469d3f79134b092563b269ee9b8ceb9059a7c65fbe8e20d',
  'native.sample_euler': '09d6f4e8d7ea6d138f51847efbc4945ed5a69674b8f4edaab75ef48a4c0acc5e',
+ 'native.sample_res_multistep': '9b3d9316d7666864a545ac01510fef64c054fb3ed1ee7f8aa83d57f28a099ed5',
+ 'native.res_multistep': 'bf17f9396aa70755b90af9a98f686fd4023df121806a9633341760e7d4553e3c',
+ 'native.sample_gradient_estimation': '7ad0f109113c28b0ae58a78dea0ef19c7b2fdc11eda3b1261f152b5f762e2209',
  'native.timestep_embedding': '69ab1a76dd6a26f3fb5482094242537eb16452edb44ddb305411e4f95d6a369b',
  'sampler.sample': '4705d96a2f040e1d953ead0acb41360ddf0b03d008eaff57e1d0a53b2dc43f9f'}

@@ -18,7 +18,9 @@ REQUESTS={
     'comfy/ldm/krea2/model.py':{
         'SingleStreamDiT':['_forward','forward','process_img','_unpack_context'],
         **{name:['forward'] for name in ['LastLayer','RMSNorm','QKNorm','SwiGLU','Attention','SimpleModulation','DoubleSharedModulation','TextFusionBlock','TextFusionTransformer','SingleStreamBlock']}},
-    'comfy/k_diffusion/sampling.py':{None:['sample_euler','sample_dpmpp_2m']},
+    'comfy/k_diffusion/sampling.py':{None:['sample_euler','sample_dpmpp_2m',
+                                           'sample_res_multistep','res_multistep',
+                                           'sample_gradient_estimation']},
     'comfy/samplers.py':{'KSAMPLER':['sample']},
     'comfy/ldm/flux/layers.py':{None:['timestep_embedding']},
 }
@@ -58,7 +60,8 @@ def main():
     else:
         changed=sorted(k for k in set(found)|set(CONTRACTS) if found.get(k)!=CONTRACTS.get(k))
         if changed:
-            raise SystemExit('Native source contracts differ: '+', '.join(changed))
+            details = '; '.join(f"{key}: expected {CONTRACTS.get(key)!r}, audited {found.get(key)!r}" for key in changed)
+            raise SystemExit('Native source contracts differ: ' + details)
         print(f'{len(found)} native source contracts match')
 
 

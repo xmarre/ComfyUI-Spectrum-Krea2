@@ -73,13 +73,16 @@ def load(root):
     native = importlib.import_module('comfy.ldm.krea2.model')
     module('comfy.k_diffusion', root/'comfy/k_diffusion')
     extract('comfy.k_diffusion.sampling', root/'comfy/k_diffusion/sampling.py',
-            {'sample_euler','sample_dpmpp_2m','to_d'},
+            {'sample_euler','sample_dpmpp_2m','sample_res_multistep',
+             'res_multistep','sample_gradient_estimation',
+             'to_d','get_ancestral_step','default_noise_sampler'},
             {'torch':torch, 'trange': lambda n, **kw: range(n),
              'utils': types.SimpleNamespace(append_dims=lambda t,n:t.reshape(t.shape+(1,)*(n-t.ndim)))})
     # Load the native KSAMPLER with an algebraically neutral host model wrapper.
     class Inpaint:
         def __init__(self, owner, sigmas):
             self.owner = owner
+            self.inner_model = owner
         def __call__(self, x, sigma, **kw):
             return self.owner(x, sigma, kw.get('model_options', {}), kw.get('seed'))
 

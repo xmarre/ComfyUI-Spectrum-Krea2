@@ -17,8 +17,12 @@ The native-component fixture substitutes CPU host infrastructure, as documented 
 
 Container regressions cover renamed parameters, extra optional arguments, variadic wrappers and invalid signature metadata. The full-host tests exercise the optional-argument and variadic cases through real sampling, each completing eight actual calls and four forecasts at twelve steps.
 
-Regression coverage distinguishes precondition rejection from corrupted prediction history: horizon misses retain genuine actual anchors, while nonfinite predictions clear them. Turbo respects explicit warmup and tail settings; the console report includes effective values. At least degree+1 actual anchors and numerical horizon bounds still apply.
+Regression coverage distinguishes precondition rejection from corrupted prediction history: horizon misses retain genuine actual anchors, while nonfinite predictions clear them. Turbo respects explicit warmup and tail settings; the console report includes effective values. At least degree+1 actual anchors and the in-domain, degenerate-span, weight-magnitude and nonfinite bounds always apply. The additional history-span extrapolation-distance guard defaults to 0.5, accepts a configurable ratio or can be explicitly disabled. Native CPU integration cases for the Krea 2 `simple` 18-step sigma schedule, truncated to the last 7 and 8 steps, verify the two guard states and relaxed settings; these exercise execution decisions and do not establish visual fidelity.
 
 GitHub Actions tests Python 3.10/3.12/3.13, an additional earlier-container lane, and both full-host container variants. [PR checks](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/1/checks) show the current remote results.
 
 Matched examples and the [GPU protocol](GPU_VALIDATION.md) remain the route to real-image acceptance. The benchmark runner has not executed GPU generation; no measured speedup, reduced-weight fidelity, perceptual quality or optimal default is claimed.
+
+### RES Multistep and Gradient Estimation (2026-11-06)
+
+The native ComfyUI source-audit contracts now include `sample_res_multistep`, its `res_multistep` delegate, and `sample_gradient_estimation`. Native CPU tests compare all-actual Spectrum runs bit-for-bit with native sampling, enforce default-only solver options and delegate integrity, verify deterministic feature-forecast runs with the 20-step Turbo schedule (11 actual, 9 forecasts), and check callback ordering and hook cleanup. Full ComfyUI ModelPatcher/CFGGuider smoke tests exercise both solvers. The count parity and deterministic execution do not establish image fidelity for real checkpoint runs; revalidate anatomy after enabling forecasts.

@@ -35,18 +35,43 @@ def validate_sampler(executor, model_wrap, sigmas, extra_args):
     if getattr(method, "__self__", None) is not sampler or getattr(method, "__func__", None) is not KSAMPLER.sample:
         return "sampler entrypoint has been replaced outside native KSAMPLER"
     function = sampler.sampler_function
-    allowed = (sampling.sample_euler, sampling.sample_dpmpp_2m)
-    if function not in allowed or not verified(function, "native." + function.__name__):
-        return "only audited native Euler and DPM++ 2M are forecast-enabled"
-    if function is sampling.sample_euler and sampler.extra_options.get("s_churn", 0) != 0:
-        return "Euler churn changes the denoiser coordinate"
-    if any(k not in {"s_churn", "s_tmin", "s_tmax", "s_noise"} for k in sampler.extra_options):
+    # Only native, source-audited deterministic one-prediction-per-step
+    # implementations may share Spectrum's one-outer-step/one-callback
+    # history contract. RES requires auditing both its entrypoint and its
+    # delegated native solver; eta=0 and cfg_pp=False are essential.
+    allowed = (
+        sampling.sample_euler,
+        sampling.sample_dpmpp_2m,
+        getattr(sampling, "sample_res_multistep", None),
+        getattr(sampling, "sample_gradient_estimation", None),
+    )
+    if function not in allowed:
+        return "only audited native Euler, DPM++ 2M, RES Multistep and Gradient Estimation are forecast-enabled"
+    if not verified(function, "native." + function.__name__):
+        return "native solver source contract changed: " + function.__name__
+    if (function is getattr(sampling, "sample_res_multistep", None)
+            and not verified(getattr(sampling, "res_multistep", None), "native.res_multistep")):
+        return "native RES Multistep solver source contract changed"
+    # A caller-supplied override of the deterministic native options could
+    # require different coordinates, introduce CFG++ side channels, or alter
+    # the solver's history. Accept no overrides for these three solvers.
+    if function is sampling.sample_euler:
+        if sampler.extra_options.get("s_churn", 0) != 0:
+            return "Euler churn changes the denoiser coordinate"
+        if any(k not in {"s_churn", "s_tmin", "s_tmax", "s_noise"} for k in sampler.extra_options):
+            return "unverified sampler options"
+    elif sampler.extra_options:
         return "unverified sampler options"
     options = extra_args.get("model_options", {})
     trans = options.get("transformer_options", {})
-    if foreign_wrappers(trans) or trans.get("patches") or trans.get("patches_replace"):
-        return "external transformer patches or wrappers are active"
-    if any(options.get(k) for k in ("model_function_wrapper", "sampler_cfg_function", "sampler_pre_cfg_function", "sampler_post_cfg_function", "multigpu_thread_pool")):
+    from .qualified_patches import qualify, explain_rejection
+    patch_policy, patch_reason = qualify(options)
+    if patch_reason:
+        return explain_rejection(options, patch_reason)
+    if (options.get("model_function_wrapper") is not None and
+            patch_policy.diffaid_patch is None and patch_policy.diffaid_wrapper is None):
+        return "custom CFG, model wrapper or multi-device execution is active"
+    if any(options.get(k) for k in ("sampler_cfg_function", "sampler_pre_cfg_function", "sampler_post_cfg_function", "multigpu_thread_pool")):
         return "custom CFG, model wrapper or multi-device execution is active"
     for conditions in model_wrap.conds.values():
         for cond in conditions or []:
@@ -73,6 +98,9 @@ class Binding:
             LOG.info("Spectrum Krea 2 sampler: container=%s.%s signature=%s solver=%s",
                      container.__module__, container.__name__, signature,
                      getattr(getattr(executor.class_obj, "sampler_function", None), "__name__", "<unknown>"))
+        from .qualified_patches import CONTRACT_REVISION
+        if self.config.debug:
+            LOG.info("Spectrum Krea 2 compatibility contract: %s", CONTRACT_REVISION)
         reason = validate_sampler(executor, model_wrap, sigmas, extra_args)
         if denoise_mask is not None:
             reason = reason or "latent inpaint masks are not forecast-enabled"
@@ -90,6 +118,8 @@ class Binding:
                           getattr(model_wrap.inner_model, "current_weight_patches_uuid", None),
                           noise.shape[0], tuple(noise.shape[-2:]))
         session.weight_owner = model_wrap.inner_model
+        from .qualified_patches import qualify
+        session.patch_policy, _ = qualify(extra_args.get("model_options", {}))
         if reason:
             session.disable(reason)
         token = CURRENT.set(session)

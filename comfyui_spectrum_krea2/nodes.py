@@ -27,6 +27,10 @@ class SpectrumApplyKrea2:
         }, "optional": {
             "bootstrap": ("BOOLEAN", {"default": True, "tooltip": "Forecast the second outer step by holding the first actual "
                                       "step's features, as Spectrum H3 does. Applies with degree 1, warmup 0 or 1 and window 1 or more."}),
+            "extrapolation_guard_enabled": ("BOOLEAN", {"default": True,
+                "tooltip": "Limit forecast distance relative to observed actual-history span. Disable to remove only this distance guard; weight stability, finite checks, warmup, Turbo window and tail remain active. Experimental; may reduce image fidelity."}),
+            "max_extrapolation_span_ratio": ("FLOAT", {"default": 0.5, "min": 0.05, "max": 8.0, "step": 0.05,
+                "tooltip": "Max forecast gap / retained actual-history span. Default 0.5. Larger values permit farther extrapolation and can cause image artifacts. Ignored when the extrapolation guard is disabled."}),
         }}
 
     RETURN_TYPES = ("MODEL",)
@@ -36,7 +40,8 @@ class SpectrumApplyKrea2:
 
     def apply(self, model, enabled=True, preset="raw", degree=1, ridge=0.01,
               warmup=4, tail=2, window=1, growth=0.0, max_history=8,
-              storage="vram", budget_mb=4096, debug=False, bootstrap=True):
+              storage="vram", budget_mb=4096, debug=False, bootstrap=True,
+              extrapolation_guard_enabled=True, max_extrapolation_span_ratio=0.5):
         from comfy.patcher_extension import WrappersMP
         types = (WrappersMP.SAMPLER_SAMPLE, WrappersMP.PREDICT_NOISE, WrappersMP.DIFFUSION_MODEL)
         installed = any(model.get_wrappers(t, KEY) for t in types)
@@ -50,7 +55,9 @@ class SpectrumApplyKrea2:
         if not native_model(getattr(getattr(model, "model", None), "diffusion_model", None)):
             raise ValueError("Spectrum Apply Krea 2 requires ComfyUI's native Krea 2 MODEL")
         config = Config(enabled, preset, degree, ridge, warmup, tail, window, growth,
-                        max_history, storage, budget_mb, debug, bool(bootstrap))
+                        max_history, storage, budget_mb, debug, bool(bootstrap),
+                        extrapolation_guard_enabled=extrapolation_guard_enabled,
+                        max_extrapolation_span_ratio=max_extrapolation_span_ratio)
         binding = Binding(config)
         cloned.add_wrapper_with_key(types[0], KEY, binding.sampler)
         cloned.add_wrapper_with_key(types[1], KEY, binding.predict)
