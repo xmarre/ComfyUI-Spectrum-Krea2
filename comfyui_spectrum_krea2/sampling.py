@@ -44,9 +44,14 @@ def validate_sampler(executor, model_wrap, sigmas, extra_args):
         return "unverified sampler options"
     options = extra_args.get("model_options", {})
     trans = options.get("transformer_options", {})
-    if foreign_wrappers(trans) or trans.get("patches") or trans.get("patches_replace"):
-        return "external transformer patches or wrappers are active"
-    if any(options.get(k) for k in ("model_function_wrapper", "sampler_cfg_function", "sampler_pre_cfg_function", "sampler_post_cfg_function", "multigpu_thread_pool")):
+    from .qualified_patches import qualify, explain_rejection
+    patch_policy, patch_reason = qualify(options)
+    if patch_reason:
+        return explain_rejection(options, patch_reason)
+    if (options.get("model_function_wrapper") is not None and
+            patch_policy.diffaid_patch is None and patch_policy.diffaid_wrapper is None):
+        return "custom CFG, model wrapper or multi-device execution is active"
+    if any(options.get(k) for k in ("sampler_cfg_function", "sampler_pre_cfg_function", "sampler_post_cfg_function", "multigpu_thread_pool")):
         return "custom CFG, model wrapper or multi-device execution is active"
     for conditions in model_wrap.conds.values():
         for cond in conditions or []:
@@ -73,6 +78,9 @@ class Binding:
             LOG.info("Spectrum Krea 2 sampler: container=%s.%s signature=%s solver=%s",
                      container.__module__, container.__name__, signature,
                      getattr(getattr(executor.class_obj, "sampler_function", None), "__name__", "<unknown>"))
+        from .qualified_patches import CONTRACT_REVISION
+        if self.config.debug:
+            LOG.info("Spectrum Krea 2 compatibility contract: %s", CONTRACT_REVISION)
         reason = validate_sampler(executor, model_wrap, sigmas, extra_args)
         if denoise_mask is not None:
             reason = reason or "latent inpaint masks are not forecast-enabled"
@@ -90,6 +98,8 @@ class Binding:
                           getattr(model_wrap.inner_model, "current_weight_patches_uuid", None),
                           noise.shape[0], tuple(noise.shape[-2:]))
         session.weight_owner = model_wrap.inner_model
+        from .qualified_patches import qualify
+        session.patch_policy, _ = qualify(extra_args.get("model_options", {}))
         if reason:
             session.disable(reason)
         token = CURRENT.set(session)

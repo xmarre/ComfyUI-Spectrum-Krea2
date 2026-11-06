@@ -383,3 +383,119 @@ def test_bootstrap_adds_the_second_step_forecast_to_short_turbo_runs(native):
     assert with_bootstrap['effective_config']['bootstrap'] is True
     assert with_bootstrap['forecast']>=without['forecast']+1
     assert with_bootstrap['actual']+with_bootstrap['forecast']==8
+
+
+
+@pytest.mark.parametrize("route_sequence, expected_reasons", [
+    # Predicted and observed dense->Sol change is one transition event.
+    (("dense", "sol", "sol"), {"numerical attention backend transition": 1}),
+    # A routing prediction that fails remains observable as a distinct event.
+    (("dense", "dense"), {
+        "numerical attention backend transition": 1,
+        "numerical attention route differed from the previous anchor": 1,
+    }),
+])
+def test_sol_attention_route_history_invalidation_is_single_event(
+        native, monkeypatch, route_sequence, expected_reasons):
+    import comfyui_spectrum_krea2.adapter as adapter
+
+    model = tiny_model(native[0])
+    x, t, context = inputs(model)
+    binding, session = setup_session(
+        model, x, Config(preset="turbo", warmup=2, tail=1, bootstrap=False),
+    )
+    # This test is about the adapter's route reconciliation, not the
+    # qualification of a separately installed attention patch.
+    monkeypatch.setattr(adapter, "matches", lambda policy, options: True)
+
+    class SimulatedSol:
+        def phase(self, x, context, refs, inner):
+            return "dense" if session.counts["actual"] == 0 else "sol"
+
+        def sol_status(self):
+            count = session.counts["actual"]
+            # First native call is dense. Later calls may or may not actually
+            # use Sol; the mismatch case intentionally forces a dense result.
+            realized = route_sequence[min(count, len(route_sequence) - 1)]
+            return {
+                "actual_evaluations": count,
+                "sparse_calls": sum(1 for route in route_sequence[:count] if route == "sol"),
+            }
+
+    session.patch_policy = SimulatedSol()
+    key = {"uuids": [uuid.UUID(int=1)], "cond_or_uncond": [0]}
+    token = CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            for step in range(len(route_sequence)):
+                session.active_step = step
+                call(model, binding, x, t, context, options=key)
+                stream = next(iter(session.streams.values()))
+                # Never retain features from the old numerical attention
+                # route once the first Sol actual has been witnessed.
+                if step == 1:
+                    assert len(stream.history.features) == 1
+                    assert stream.actual_anchors == 1
+            assert session.counts["actual"] == len(route_sequence)
+            for reason, count in expected_reasons.items():
+                assert session.reasons[reason] == count
+            assert sum(
+                count for reason, count in session.reasons.items()
+                if reason.startswith("numerical attention")
+            ) == sum(expected_reasons.values())
+            assert session.disabled_reason is None
+    finally:
+        CURRENT.reset(token)
+    assert not model.last._forward_pre_hooks
+
+
+
+@pytest.mark.parametrize('remaining,expected_default,expected_relaxed', [
+    (7, 1, 2),
+    (8, 2, 3),
+])
+def test_krea_simple_high_resolution_schedule_guard_toggle(
+        native, remaining, expected_default, expected_relaxed):
+    # This is the native 18-step simple-scheduler tail used by
+    # composition-lock handoffs, at 0.70 (7) and 0.72 (8).
+    # ComfyUI's ModelSamplingFlux uses mu=1.15 and a 10,000-element
+    # shifted sigma table. The native 'simple' scheduler reads table entries
+    # from the end at int(i * 10000/18). Reproduce those exact FP32 values
+    # here without importing unrelated ComfyUI host dependencies.
+    import math
+    shift = math.exp(1.15)
+    full = []
+    for i in range(18):
+        t = (10000 - int(i * (10000 / 18))) / 10000
+        full.append(shift * t / (1 - t + shift * t))
+    full = torch.tensor(full + [0.], dtype=torch.float32)
+    sigmas = full[-(remaining + 1):]
+    model = tiny_model(native[0])
+    baseline_config = dict(preset='turbo', warmup=2, tail=1,
+                           window=1, bootstrap=False)
+    reports = {}
+    for name, overrides in (
+        ('default', {}),
+        ('relaxed', {'max_extrapolation_span_ratio': 1.5}),
+        ('disabled', {'extrapolation_guard_enabled': False}),
+    ):
+        _, report = run(model, Config(**baseline_config, **overrides),
+                        steps=remaining, sigmas=sigmas)
+        assert report['fallback'] is None, report
+        assert report['outer_steps'] == remaining, report
+        assert report['actual'] + report['forecast'] == remaining, report
+        assert report['bootstrap_forecast'] == 0, report
+        assert report['effective_config']['extrapolation_guard_enabled'] == (
+            name != 'disabled')
+        assert report['effective_config']['max_extrapolation_span_ratio'] == (
+            1.5 if name == 'relaxed' else 0.5)
+        assert report['actual_reasons'].get('numerical attention backend transition', 0) == 0
+        reports[name] = report
+    assert reports['default']['forecast'] == expected_default, reports
+    assert reports['relaxed']['forecast'] == expected_relaxed, reports
+    assert reports['disabled']['forecast'] == expected_relaxed, reports
+    assert reports['default']['actual_reasons'].get(
+        'forecast rejected: extrapolation exceeds half the retained history span') == 2
+    for name in ('relaxed', 'disabled'):
+        assert not any('extrapolation exceeds' in reason
+                       for reason in reports[name]['actual_reasons'])
