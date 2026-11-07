@@ -22,8 +22,13 @@ REQUESTS={
                                            'sample_res_multistep','res_multistep',
                                            'sample_gradient_estimation',
                                            'sample_deis','sample_ipndm','sample_ipndm_v',
-                                           'sample_er_sde','sigma_to_half_log_snr',
+                                           'sample_er_sde','sample_sa_solver','sample_sa_solver_pece',
+                                           'sigma_to_half_log_snr',
                                            'offset_first_sigma_for_snr']},
+    'comfy/k_diffusion/sa_solver.py':{None:[
+        'compute_stochastic_adams_b_coeffs',
+        'compute_simple_stochastic_adams_b_coeffs',
+        'compute_exponential_coeffs', 'get_tau_interval_func']},
     'comfy/k_diffusion/deis.py':{None:['get_deis_coeff_list','edm2t','cal_poly',
                                        'cal_intergrand','t2alpha_fn']},
     'comfy/samplers.py':{'KSAMPLER':['sample']},
@@ -44,6 +49,7 @@ def collect(root):
                 first=min([node.lineno]+[n.lineno for n in node.decorator_list])-1
                 code=''.join(lines[first:node.end_lineno])
                 prefix=('deis' if path.endswith('/deis.py') else
+                        'sa_solver' if path.endswith('/sa_solver.py') else
                         {'SingleStreamDiT':'model','LastLayer':'last',
                          'KSAMPLER':'sampler'}.get(cls, cls or 'native'))
                 value=source_digest(code)

@@ -663,3 +663,82 @@ def test_er_sde_sigma_contract_mismatch_disables_forecasting(native, monkeypatch
     monkeypatch.setattr(sampling, helper, lambda *a, **kw: None)
     assert validate_sampler(executor, None, torch.linspace(1, 0, 5),
                             {'model_options': {}}) == 'native ER-SDE sigma conversion source contract changed'
+
+
+
+@pytest.mark.parametrize('name,pece',[
+    ('sample_sa_solver', False),
+    ('sample_sa_solver', True),
+    ('sample_sa_solver_pece', True),
+])
+@pytest.mark.parametrize('split',[False,True])
+@pytest.mark.parametrize('stochastic',[False,True])
+def test_sa_solver_native_predictor_and_pece_corrector(native,name,pece,split,stochastic):
+    """PECE's second denoiser call occurs *after* the outer-step callback.
+
+    Forecast only first (predictor) calls; correction calls must remain
+    numerical native, including when the predictor was forecast.
+    """
+    model=tiny_model(native[0])
+    options={'predictor_order':3,'corrector_order':4,
+             'tau_func':(lambda sigma: .6 if stochastic else 0.),
+             's_noise':.5 if stochastic else 0.}
+    if name == 'sample_sa_solver':
+        options['use_pece']=pece
+    steps=12
+    torch.manual_seed(1234)
+    accelerated,report=run(
+        model,Config(preset='turbo',warmup=2,tail=1,bootstrap=False,
+                     extrapolation_guard_enabled=False),
+        steps=steps,split=split,sampler_name=name,sampler_options=options)
+    correction=(steps-1) if pece else 0
+    multiplier=2 if split else 1
+    assert report['fallback'] is None, report
+    assert report['outer_steps']==steps
+    assert report['pece_corrector_evaluations']==correction
+    assert report['forecast']>0
+    assert report['denoiser_calls']==(steps+correction)*multiplier
+    assert report['actual']+report['forecast']==(steps+correction)*multiplier
+    torch.manual_seed(1234)
+    same,repeated=run(
+        model,Config(preset='turbo',warmup=2,tail=1,bootstrap=False,
+                     extrapolation_guard_enabled=False),
+        steps=steps,split=split,sampler_name=name,sampler_options=options)
+    torch.testing.assert_close(accelerated,same,atol=0,rtol=0)
+    assert repeated['pece_corrector_evaluations']==correction
+    torch.manual_seed(1234)
+    native_result,baseline=run(model,Config(window=0),steps=steps,split=split,
+                               sampler_name=name,sampler_options=options)
+    torch.manual_seed(1234)
+    native_again,baseline_again=run(model,Config(window=0),steps=steps,split=split,
+                                   sampler_name=name,sampler_options=options)
+    torch.testing.assert_close(native_result,native_again,atol=0,rtol=0)
+    assert baseline['forecast']==0 and baseline['fallback'] is None
+    assert baseline_again['pece_corrector_evaluations']==correction
+    assert CURRENT.get() is None and not model.last._forward_pre_hooks
+
+
+@pytest.mark.parametrize('options',[{'predictor_order':0},{'corrector_order':7},
+                                    {'s_noise':float('nan')},
+                                    {'use_pece':'true'},{'unknown_override':1}])
+def test_sa_solver_rejects_unreviewed_options(native,options):
+    from comfy.samplers import KSAMPLER
+    from comfy.k_diffusion import sampling
+    from comfyui_spectrum_krea2.sampling import validate_sampler
+    sampler=KSAMPLER(sampling.sample_sa_solver,extra_options=options)
+    executor=types.SimpleNamespace(class_obj=sampler,original=sampler.sample)
+    reason=validate_sampler(executor,None,torch.linspace(1,0,5),{'model_options':{}})
+    assert reason in ('invalid SA-Solver options','unverified SA-Solver options')
+
+
+def test_sa_solver_modified_helper_forces_native_fallback(native,monkeypatch):
+    from comfy.samplers import KSAMPLER
+    from comfy.k_diffusion import sampling,sa_solver
+    from comfyui_spectrum_krea2.sampling import validate_sampler
+    original=sa_solver.compute_stochastic_adams_b_coeffs
+    monkeypatch.setattr(sa_solver,'compute_stochastic_adams_b_coeffs',
+                        lambda *a,**kw: torch.ones(1))
+    sampler=KSAMPLER(sampling.sample_sa_solver,extra_options={'tau_func':lambda _:0.})
+    executor=types.SimpleNamespace(class_obj=sampler,original=sampler.sample)
+    assert validate_sampler(executor,None,torch.linspace(1,0,5),
+                            {'model_options':{}}) == 'native SA-Solver coefficient or tau source contract changed'

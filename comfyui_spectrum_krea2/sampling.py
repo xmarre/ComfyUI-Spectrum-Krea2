@@ -52,6 +52,8 @@ def validate_sampler(executor, model_wrap, sigmas, extra_args):
         getattr(sampling, "sample_ipndm", None),
         getattr(sampling, "sample_ipndm_v", None),
         getattr(sampling, "sample_er_sde", None),
+        getattr(sampling, "sample_sa_solver", None),
+        getattr(sampling, "sample_sa_solver_pece", None),
     )
     if function not in allowed:
         return "only audited native Euler, DPM++ 2M, RES Multistep, Gradient Estimation, DEIS, iPNDM and ER-SDE solvers are forecast-enabled"
@@ -64,6 +66,18 @@ def validate_sampler(executor, model_wrap, sigmas, extra_args):
         if any(not verified(getattr(sampling, name, None), "native." + name)
                for name in ("sigma_to_half_log_snr", "offset_first_sigma_for_snr")):
             return "native ER-SDE sigma conversion source contract changed"
+    if function in (getattr(sampling, "sample_sa_solver", None),
+                    getattr(sampling, "sample_sa_solver_pece", None)):
+        if any(not verified(getattr(sampling, name, None), "native." + name)
+               for name in ("sigma_to_half_log_snr", "offset_first_sigma_for_snr",
+                            "sample_sa_solver", "sample_sa_solver_pece")):
+            return "native SA-Solver or sigma source contract changed"
+        from comfy.k_diffusion import sa_solver
+        if any(not verified(getattr(sa_solver, name, None), "sa_solver." + name)
+               for name in ("compute_stochastic_adams_b_coeffs",
+                            "compute_simple_stochastic_adams_b_coeffs",
+                            "compute_exponential_coeffs", "get_tau_interval_func")):
+            return "native SA-Solver coefficient or tau source contract changed"
     if function is getattr(sampling, "sample_deis", None):
         helper = getattr(sampling, "deis", None)
         if helper is None or any(
@@ -97,6 +111,28 @@ def validate_sampler(executor, model_wrap, sigmas, extra_args):
                 ("noise_sampler" in er_options and
                  not callable(er_options["noise_sampler"]))):
             return "unverified ER-SDE options"
+    elif function in (getattr(sampling, "sample_sa_solver", None),
+                       getattr(sampling, "sample_sa_solver_pece", None)):
+        sa_options = sampler.extra_options
+        keys = {"tau_func", "s_noise", "noise_sampler", "predictor_order",
+                "corrector_order", "simple_order_2"}
+        is_pece_alias = function is getattr(sampling, "sample_sa_solver_pece", None)
+        if not is_pece_alias:
+            keys.add("use_pece")
+        if set(sa_options) - keys:
+            return "unverified SA-Solver options"
+        predictor = sa_options.get("predictor_order", 3)
+        corrector = sa_options.get("corrector_order", 4)
+        s_noise = sa_options.get("s_noise", 1.0)
+        if (type(predictor) is not int or not 1 <= predictor <= 6 or
+                type(corrector) is not int or not 0 <= corrector <= 6 or
+                isinstance(s_noise, bool) or not isinstance(s_noise, (int, float)) or
+                not math.isfinite(s_noise) or not 0 <= s_noise <= 100 or
+                type(sa_options.get("simple_order_2", False)) is not bool or
+                (not is_pece_alias and type(sa_options.get("use_pece", False)) is not bool) or
+                ("tau_func" in sa_options and not callable(sa_options["tau_func"])) or
+                ("noise_sampler" in sa_options and not callable(sa_options["noise_sampler"]))):
+            return "invalid SA-Solver options"
     elif sampler.extra_options:
         return "unverified sampler options"
     options = extra_args.get("model_options", {})
@@ -149,7 +185,8 @@ class Binding:
         # reduced sigma to avoid infinite log-SNR. Forecast history must use
         # the actual denoiser coordinates while preserving the original
         # sampler's noise scaling and stochastic update.
-        if reason is None and executor.class_obj.sampler_function.__name__ == "sample_er_sde":
+        if reason is None and executor.class_obj.sampler_function.__name__ in (
+                "sample_er_sde", "sample_sa_solver", "sample_sa_solver_pece"):
             from comfy.k_diffusion import sampling
             model_sampling = model_wrap.model_patcher.get_model_object("model_sampling")
             effective_sigmas = sampling.offset_first_sigma_for_snr(sigmas, model_sampling)
@@ -164,6 +201,17 @@ class Binding:
                           getattr(model_wrap.inner_model, "current_weight_patches_uuid", None),
                           noise.shape[0], tuple(noise.shape[-2:]))
         session.weight_owner = model_wrap.inner_model
+        sa_options = executor.class_obj.extra_options
+        is_sa = executor.class_obj.sampler_function.__name__ in (
+            "sample_sa_solver", "sample_sa_solver_pece"
+        )
+        session.pece_enabled = (is_sa and
+            (executor.class_obj.sampler_function.__name__ == "sample_sa_solver_pece" or
+             sa_options.get("use_pece", False)))
+        session.pece_corrector_order = (
+            sa_options.get("corrector_order", 4) if session.pece_enabled else 0
+        )
+        session.pece_sigmas = tuple(values[:-1]) if session.pece_enabled else ()
         from .qualified_patches import qualify
         session.patch_policy, _ = qualify(extra_args.get("model_options", {}))
         if reason:
@@ -173,6 +221,12 @@ class Binding:
         def on_step(step, x0, x, total):
             if session.predict_calls != 1 or step != session.step or total != len(values) - 1:
                 session.disable("sampler callback and denoiser opportunity ordering changed")
+            if session.pece_pending_step is not None:
+                session.disable("PECE correction evaluation was not observed before next callback")
+            session.pece_pending_step = (
+                step if session.pece_enabled and session.pece_corrector_order > 0
+                and step > 0 else None
+            )
             session.step += 1
             session.predict_calls = 0
             if callback is not None:
@@ -188,6 +242,8 @@ class Binding:
             return executor(model_wrap, sigmas, extra_args, on_step, noise,
                             latent_image, denoise_mask, disable_pbar)
         finally:
+            if session.pece_pending_step is not None and session.disabled_reason is None:
+                session.disable("PECE correction evaluation missing at sampler completion")
             report = session.report()
             session.streams.clear()
             CURRENT.reset(token)
@@ -200,6 +256,30 @@ class Binding:
         session = CURRENT.get()
         if session is None or session.binding is not self:
             return executor(x, timestep, model_options or {}, seed)
+        if session.pece_pending_step is not None:
+            step = session.pece_pending_step
+            target = session.pece_sigmas[step]
+            same_sigma = (
+                torch.is_tensor(timestep) and timestep.numel() > 0
+                and bool(torch.isfinite(timestep).all())
+                and bool(torch.allclose(
+                    timestep, torch.full_like(timestep, target), rtol=1e-5, atol=1e-6
+                ))
+            )
+            session.pece_pending_step = None
+            if same_sigma:
+                # PECE corrects the *same* outer step after its callback.
+                # Always evaluate the native denoiser: neither a predictor
+                # forecast nor its history may substitute this correction.
+                # Keep CURRENT so actual evaluation counters remain accurate.
+                prior = session.active_step
+                session.active_step = None
+                session.counts["pece_correction"] += 1
+                try:
+                    return executor(x, timestep, model_options or {}, seed)
+                finally:
+                    session.active_step = prior
+            session.disable("PECE correction sigma/order mismatch")
         session.predict_calls += 1
         if session.predict_calls != 1 or session.step >= len(session.coordinates):
             session.disable("repeated or off-schedule denoiser opportunity")

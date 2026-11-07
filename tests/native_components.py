@@ -78,14 +78,20 @@ def load(root):
                    {'get_deis_coeff_list','edm2t','cal_poly',
                     'cal_intergrand','t2alpha_fn'},
                    {'torch':torch,'np':np})
+    sa_solver = extract('comfy.k_diffusion.sa_solver', root/'comfy/k_diffusion/sa_solver.py',
+                        {'compute_stochastic_adams_b_coeffs',
+                         'compute_simple_stochastic_adams_b_coeffs',
+                         'compute_exponential_coeffs', 'get_tau_interval_func'},
+                        {'torch': torch, 'math': math})
     extract('comfy.k_diffusion.sampling', root/'comfy/k_diffusion/sampling.py',
             {'sample_euler','sample_dpmpp_2m','sample_res_multistep',
              'res_multistep','sample_gradient_estimation',
              'sample_deis','sample_ipndm','sample_ipndm_v',
-             'sample_er_sde','sigma_to_half_log_snr',
+             'sample_er_sde','sample_sa_solver','sample_sa_solver_pece',
+             'sigma_to_half_log_snr',
              'offset_first_sigma_for_snr',
              'to_d','get_ancestral_step','default_noise_sampler'},
-            {'torch':torch, 'comfy':comfy, 'deis':deis,
+            {'torch':torch, 'comfy':comfy, 'deis':deis, 'sa_solver':sa_solver,
              'trange': lambda n, **kw: range(n),
              'utils': types.SimpleNamespace(append_dims=lambda t,n:t.reshape(t.shape+(1,)*(n-t.ndim)))})
     # Load the native KSAMPLER with an algebraically neutral host model wrapper.
