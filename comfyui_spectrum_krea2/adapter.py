@@ -7,7 +7,7 @@ import torch
 from .compat import native_model, verified
 from .forecast import ForecastUnavailable, ForecastNonfinite
 from .runtime import CURRENT
-from .sampling import foreign_wrappers
+from .qualified_patches import matches
 
 CAPTURE = contextvars.ContextVar("spectrum_krea2_capture", default=None)
 
@@ -30,7 +30,7 @@ def call_contract(session, inner, x, context, ref_latents, options, kwargs):
         return "conditioning layout changed"
     if context.shape[2] != inner.txtlayers * inner.txtdim:
         return "conditioning encoder is incompatible"
-    if options.get("patches") or options.get("patches_replace") or foreign_wrappers(options):
+    if not matches(session.patch_policy, options):
         return "external transformer modifications are active"
     if kwargs.get("control") is not None:
         return "control conditioning is active"
@@ -86,6 +86,38 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         return result
     if session is None or session.binding is not binding:
         return native()
+    if session.native_only:
+        # Native-only is an exact denoiser bypass, not merely a "no forecast"
+        # decision: avoid installing the final-layer capture hook and retaining
+        # potentially gigabytes of unused predictor history.
+        return native()
+    if session.solver_skip and session.active_step is not None and session.disabled_reason is None:
+        # A solver-owned skip must satisfy the same live contract as an
+        # ordinary forecast. In particular, re-check patches, conditioning,
+        # model/weight ownership, and attention scope before skipping DiT.
+        inner = executor.class_obj
+        reason = call_contract(session, inner, x, context, ref_latents, options, kwargs)
+        if session.weight_owner.current_weight_patches_uuid != session.weight_identity:
+            reason = "active weight patches changed"
+        if reason is None and session.patch_policy is not None:
+            if session.patch_policy.phase(x, context, ref_latents, inner) is None:
+                reason = "qualified Sol-Krea2 sampling scope was lost"
+        if reason:
+            # One CFG branch may already have been skipped. We cannot undo
+            # its placeholder, so abort rather than mix skipped/native branch
+            # outputs and silently pass an inconsistent denoised prediction.
+            if session.served_forecast:
+                raise RuntimeError(
+                    "SA-PECE partial predicted-phase skip: " + reason
+                )
+            session.disable("SA-PECE skip qualification changed: " + reason)
+            return native()
+        # Active-PECE predicted phase is owned by the solver: the adapter
+        # will replace this placeholder with exact-correction-anchor output.
+        session.counts["forecast"] += 1
+        session.counts["pece_solver_skip"] += 1
+        session.served_forecast = True
+        return torch.zeros_like(x)
     inner = executor.class_obj
     if session.disabled_reason or session.active_step is None:
         return native()
@@ -103,6 +135,17 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
     if stream is None:
         return native()
     step = session.active_step
+    policy = session.patch_policy
+    phase = policy.phase(x, context, ref_latents, inner) if policy is not None else "native"
+    if phase is None:
+        session.disable("qualified Sol-Krea2 sampling scope was lost")
+        return native()
+    planned_transition = stream.route is not None and stream.route != phase
+    if planned_transition:
+        stream.history.clear()
+        stream.last_actual = -1
+        stream.actual_anchors = 0
+        session.reason("numerical attention backend transition")
     if stream.last_step >= step:
         stream.history.clear()
         session.reason("repeated branch evaluation at one outer step")
@@ -128,6 +171,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         else:
             stream.last_step = step
             session.counts["forecast"] += 1
+            session.served_forecast = True
             if mode == "bootstrap":
                 session.counts["bootstrap"] += 1
             return output
@@ -149,6 +193,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
             capture_error.append(str(exc))
         return None
 
+    before_sol = policy.sol_status() if policy is not None else None
     token = CAPTURE.set(capture_id)
     handle = None
     try:
@@ -159,6 +204,26 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
             handle.remove()
         CAPTURE.reset(token)
     stream.last_step = step
+    if before_sol is not None:
+        after_sol = policy.sol_status()
+        if (after_sol is None or
+                after_sol["actual_evaluations"] != before_sol["actual_evaluations"] + 1):
+            session.disable("Sol-Krea2 native execution was not witnessed")
+            stream.history.clear()
+            return output
+        realized = "sol" if after_sol["sparse_calls"] > before_sol["sparse_calls"] else "dense"
+    else:
+        realized = "native"
+    # The preflight already invalidated history when it predicted a route
+    # change. Compare a witnessed actual against that prediction; do not
+    # invalidate or report the same dense-to-sparse transition twice.
+    if realized != phase or (
+            not planned_transition and stream.route is not None and stream.route != realized):
+        stream.history.clear()
+        stream.last_actual = -1
+        stream.actual_anchors = 0
+        session.reason("numerical attention route differed from the previous anchor")
+    stream.route = realized
     if len(captured) == 1 and not capture_error:
         try:
             session.observe(stream, captured[0])

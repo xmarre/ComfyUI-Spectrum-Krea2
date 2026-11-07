@@ -13,6 +13,7 @@ import pathlib
 import os
 import sys
 import types
+from typing import Callable, Union
 import torch
 from torch import nn
 from einops import rearrange
@@ -49,6 +50,7 @@ def load(root):
     module('comfy.model_management', cast_to=lambda x, **kw: x.to(**kw),
            supports_fp64=lambda _: True, in_training=True)
     module('comfy.quant_ops')
+    module('comfy.model_sampling', CONST=type('CONST', (), {}))
     module('comfy.rmsnorm', rms_norm=torch.nn.functional.rms_norm)
     module('comfy.utils')
     extract('comfy.utils', root/'comfy/utils.py', {'repeat_to_batch_size'}, {'torch':torch, 'math':math})
@@ -72,14 +74,32 @@ def load(root):
     importlib.import_module('comfy.patcher_extension')
     native = importlib.import_module('comfy.ldm.krea2.model')
     module('comfy.k_diffusion', root/'comfy/k_diffusion')
+    import numpy as np
+    deis = extract('comfy.k_diffusion.deis', root/'comfy/k_diffusion/deis.py',
+                   {'get_deis_coeff_list','edm2t','cal_poly',
+                    'cal_intergrand','t2alpha_fn'},
+                   {'torch':torch,'np':np})
+    sa_solver = extract('comfy.k_diffusion.sa_solver', root/'comfy/k_diffusion/sa_solver.py',
+                        {'compute_stochastic_adams_b_coeffs',
+                         'compute_simple_stochastic_adams_b_coeffs',
+                         'compute_exponential_coeffs', 'get_tau_interval_func'},
+                        {'torch': torch, 'math': math, 'Callable': Callable, 'Union': Union})
     extract('comfy.k_diffusion.sampling', root/'comfy/k_diffusion/sampling.py',
-            {'sample_euler','sample_dpmpp_2m','to_d'},
-            {'torch':torch, 'trange': lambda n, **kw: range(n),
+            {'sample_euler','sample_dpmpp_2m','sample_res_multistep',
+             'res_multistep','sample_gradient_estimation',
+             'sample_deis','sample_ipndm','sample_ipndm_v',
+             'sample_er_sde','sample_sa_solver','sample_sa_solver_pece',
+             'sigma_to_half_log_snr',
+             'offset_first_sigma_for_snr',
+             'to_d','get_ancestral_step','default_noise_sampler'},
+            {'torch':torch, 'comfy':comfy, 'deis':deis, 'sa_solver':sa_solver,
+             'trange': lambda n, **kw: range(n),
              'utils': types.SimpleNamespace(append_dims=lambda t,n:t.reshape(t.shape+(1,)*(n-t.ndim)))})
     # Load the native KSAMPLER with an algebraically neutral host model wrapper.
     class Inpaint:
         def __init__(self, owner, sigmas):
             self.owner = owner
+            self.inner_model = owner
         def __call__(self, x, sigma, **kw):
             return self.owner(x, sigma, kw.get('model_options', {}), kw.get('seed'))
 
