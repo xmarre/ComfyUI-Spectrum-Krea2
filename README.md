@@ -36,7 +36,7 @@ RAW and Turbo have the same native class and no verified distillation flag. Prof
 | Native DPM++ 2M, RES Multistep, Gradient Estimation, DEIS, iPNDM, iPNDM-V | Forecast-enabled (default deterministic paths only) | Source-audited, real ComfyUI CPU integration; GPU image quality pending |
 | Native ER-SDE (stochastic or ODE) | Forecast-enabled with verified native update and sigma conversion, valid native scaler/noise/stage options | CPU contract/integration tests; stochastic image quality pending |
 | Native SA-Solver (SDE or ODE) | One predictor evaluation per step; native stochastic Adams equations and noise; forecasts never enter Adams history, and on stochastic inputs SA uses an actual-anchor value instead of the forecast | Source-audited CPU integration; CUDA quality pending |
-| Native SA-Solver PECE | Predictor forecasts permitted; corrected-state denoiser calls remain native, in their original after-callback order ; optional `sa_pece_forecast_policy` (`stable_start`/`balanced`/`max_speed`) skips the model for predicted phases after a 3/2/1-step prefix and feeds the corrector an extrapolation of exact corrected results | Source-audited CPU predictor/corrector tests; CUDA quality pending |
+| Native SA-Solver PECE | Predictor forecasts permitted; corrected-state denoiser calls remain native, in their original after-callback order ; optional `sa_pece_forecast_policy` (`stable_start`/`balanced`/`max_speed`/`balanced_detail`) skips the model for predicted phases after a 3/2/1-step prefix and feeds the corrector an extrapolation of exact corrected results | Source-audited CPU predictor/corrector tests; CUDA quality pending |
 | Strictly decreasing custom schedules, truncated denoise / partial stages | Fresh state per sampler invocation; warmup and tail use the actual received schedule | CPU tests; real workflows pending |
 | Native CFG, combined or separate branches; batches | Independent histories keyed by ordered condition UUIDs and full layout | CPU tests; real checkpoints pending |
 | Text-to-image / image-to-image | Same native image denoiser contract | CPU structural tests; GPU pending |
@@ -127,5 +127,22 @@ forecast path. A native-only result that is still defective implicates the
 sampler or Scale-Locked stage/refinement rather than Spectrum extrapolation;
 this switch is a controlled diagnostic and is not a general SA image-quality
 guarantee.
+
+**Experimental `balanced_detail` quality candidate.** This keeps exactly
+the same PECE predictor-skip budget as `balanced`, but replaces the
+**out-of-horizon** corrected-endpoint extrapolation guard. The earlier guard
+jumps abruptly from a nearly full secant update at a half-log-SNR ratio of
+one to a complete hold when the ratio is slightly greater than one.
+`balanced_detail` uses a continuously bounded secant: weight `w=alpha`
+for ratios from zero to one, then `w=1/alpha` for ratios above one.
+The solver receives `latest_actual + w*(latest_actual-previous_actual)`.
+The extrapolated displacement is bounded by one exact corrected-endpoint
+change and decays smoothly toward a hold for very distant steps. Invalid
+or reversed geometry still holds, and **no raw current stochastic
+increment is introduced**. The already validated `off`, `balanced`,
+`stable_start`, and `max_speed` behavior is unchanged. This is an
+opt-in numerical experiment, **not an established CUDA quality fix**.
+Compare `off`, `balanced`, and `balanced_detail` on the same seed
+and checkpoint, including close-up detail at the last resolution stage.
 
 Scale-Locked Regenerate skips fully composition-locked high-resolution denoiser calls for its ten offered native solvers. The **separate Spectrum acceleration layer** supports Euler, DPM++ 2M, RES Multistep, Gradient Estimation, DEIS, iPNDM, iPNDM-V, **ER-SDE**, **SA-Solver**, and **SA-Solver PECE** when native source contracts match. A forecast replaces one denoised prediction; every solver retains its original numerical update and history, except that SA-Solver keeps forecasts out of its Adams history and replaces forecasts on stochastic inputs with an actual-anchor value (see docs/ARCHITECTURE.md). ER-SDE continues to inject native stochastic noise (or runs in its explicitly selected ODE mode). The native first-sigma flow correction is also applied to Spectrum history coordinates. ER-SDE accepts validated `max_stage`, `s_noise`, `noise_scaler` and `noise_sampler` options; unrecognized overrides and modified solver or sigma conversion source require native fallback. Scale-Locked's ER-SDE noise sampler couples per-step Gaussian increments across planner and target resolutions. All structural/CPU results are separate from real Krea 2 checkpoint quality and CUDA throughput, which require matched-seed evaluation.

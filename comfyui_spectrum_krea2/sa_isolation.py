@@ -26,12 +26,15 @@ Without forecasts the update is the native one, operation for operation.
 import torch
 
 
-def causal_denoised(values, lambdas, steps, target_lambda, allow_consecutive=False):
+def causal_denoised(values, lambdas, steps, target_lambda, allow_consecutive=False,
+                    soft_guard=False):
     """Predict SA's denoised variable from actual anchors only.
 
     Returns ``(value, mode)`` with mode ``hold`` (one anchor, or consecutive
     anchors unless ``allow_consecutive``: active PECE endpoints are exact), ``guard_hold`` (untrusted geometry or more than one anchor
-    interval ahead) or ``extrapolation``. The guard reads one scalar.
+    interval ahead) or ``extrapolation``. With opt-in ``soft_guard``,
+    overlong forward steps retain a continuously attenuated, bounded secant
+    instead of discontinuously dropping to zero. The guard reads one scalar.
     """
     if not values or not len(values) == len(lambdas) == len(steps):
         raise RuntimeError("stochastic SA dense output requires aligned actual anchors")
@@ -48,11 +51,23 @@ def causal_denoised(values, lambdas, steps, target_lambda, allow_consecutive=Fal
                           torch.ones_like(lambdas[-1]))
     valid = (torch.isfinite(alpha) & torch.isfinite(denominator)
              & (denominator.abs() > 1e-12 * scale) & (denominator * advance >= 0.0)
-             & (alpha >= -1e-6) & (alpha <= 1.0 + 1e-6))
-    if not bool(valid):
+             & (alpha >= -1e-6))
+    if not bool(valid) or (not soft_guard and bool(alpha > 1.0 + 1e-6)):
         return latest.clone(memory_format=torch.contiguous_format), "guard_hold"
-    weight = alpha.clamp(0.0, 1.0).to(device=latest.device, dtype=latest.dtype)
-    return torch.lerp(latest, previous, -weight), "extrapolation"
+    # The ordinary hard guard jumps from a near-full secant at alpha≈1 to
+    # an exact hold at alpha>1. The opt-in detail mode replaces that abrupt
+    # cutoff with w=1/alpha beyond the trustworthy horizon: continuous at
+    # alpha=1, strictly bounded by one exact corrected-anchor increment,
+    # and tending smoothly to a hold for very long extrapolation distances.
+    # It never introduces the current stochastic predictor input or its
+    # unobserved Gaussian increment into the solver-facing output.
+    if soft_guard and bool(alpha > 1.0):
+        weight = alpha.reciprocal().to(device=latest.device, dtype=latest.dtype)
+        mode = "soft_extrapolation"
+    else:
+        weight = alpha.clamp(0.0, 1.0).to(device=latest.device, dtype=latest.dtype)
+        mode = "extrapolation"
+    return torch.lerp(latest, previous, -weight), mode
 
 
 def sample_sa_solver_isolated(session, model, x, sigmas, extra_args=None, callback=None,
@@ -108,7 +123,8 @@ def sample_sa_solver_isolated(session, model, x, sigmas, extra_args=None, callba
                 # Stochastic input: x_pred holds a fresh increment the forecast
                 # could not see. Accelerated PECE: the solver owns this value.
                 denoised, mode = causal_denoised(actual_preds, actual_lambdas, actual_steps, lambdas[i],
-                                                 allow_consecutive=accelerated)
+                                                 allow_consecutive=accelerated,
+                                                 soft_guard=(session.config.sa_pece_forecast_policy == "balanced_detail"))
                 session.counts["sa_dense_output"] += 1
                 session.counts["sa_dense_" + mode] += 1
                 session.sa_dense_steps.append({"step": i, "sigma": round(float(sigmas[i]), 6),

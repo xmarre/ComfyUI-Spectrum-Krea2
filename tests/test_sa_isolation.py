@@ -163,7 +163,8 @@ class SkipAware(Steps):
         return self.model(x, sigma, **kwargs)
 
 
-@pytest.mark.parametrize('policy,prefix', [('stable_start', 3), ('balanced', 2), ('max_speed', 1)])
+@pytest.mark.parametrize('policy,prefix', [('stable_start', 3), ('balanced', 2), ('max_speed', 1),
+                                           ('balanced_detail', 2)])
 @pytest.mark.parametrize('stochastic', [False, True])
 def test_accelerated_pece_skips_predictions_without_consuming_them(native, policy, prefix, stochastic):
     x = torch.randn(1, 2, 4, 6, generator=torch.Generator().manual_seed(11))
@@ -205,3 +206,55 @@ def test_pece_policy_off_and_plain_sa_never_skip(native):
 def test_invalid_pece_policy_rejected():
     with pytest.raises(ValueError):
         Config(sa_pece_forecast_policy='fastest')
+
+
+
+def test_soft_guard_removes_alpha_one_discontinuity_without_unbounded_extrapolation():
+    """An overlong corrected-endpoint interval must fade, not suddenly become a hold."""
+    prev, latest = torch.zeros(4), torch.ones(4)
+    lams = [torch.tensor(0.0), torch.tensor(1.0)]
+    guarded, status = causal_denoised([prev, latest], lams, [0, 1],
+                                     torch.tensor(2.0001), allow_consecutive=True)
+    assert status == "guard_hold" and torch.equal(guarded, latest)
+    below, below_mode = causal_denoised([prev, latest], lams, [0, 1],
+                                        torch.tensor(1.9999), allow_consecutive=True,
+                                        soft_guard=True)
+    above, above_mode = causal_denoised([prev, latest], lams, [0, 1],
+                                        torch.tensor(2.0001), allow_consecutive=True,
+                                        soft_guard=True)
+    assert below_mode == "extrapolation" and above_mode == "soft_extrapolation"
+    assert torch.max(torch.abs(below - above)) < 0.001
+    distant, status = causal_denoised([prev, latest], lams, [0, 1],
+                                     torch.tensor(10.0), allow_consecutive=True,
+                                     soft_guard=True)
+    assert status == "soft_extrapolation"
+    assert torch.all(distant > 1.0) and torch.all(distant <= 2.0)
+    backward, status = causal_denoised([prev, latest], lams, [0, 1],
+                                      torch.tensor(0.5), allow_consecutive=True,
+                                      soft_guard=True)
+    assert status == "guard_hold" and torch.equal(backward, latest)
+
+
+def test_balanced_detail_preserves_skip_budget_but_changes_overlong_solver_values(native):
+    """A corrected-endpoint soft guard uses no raw stochastic predictor forecast."""
+    x = torch.randn(1, 2, 4, 6, generator=torch.Generator().manual_seed(31))
+    options = dict(tau_func=lambda sigma: 0.8, s_noise=0.7, use_pece=True)
+    def run(policy, skip_value):
+        session = Session(object(), Config(sa_pece_forecast_policy=policy), [0.0] * 10,
+                          None, None, 1, (4, 6))
+        model = SkipAware(session, Model(), skip_value)
+        result = sample_sa_solver_isolated(session, model, x, SIGMAS,
+                                            noise_sampler=noise_sampler_factory(17),
+                                            **options)
+        return result, session, model
+    old, base_report, old_model = run("balanced", lambda x: torch.ones_like(x))
+    new, report, model = run("balanced_detail", lambda x: torch.ones_like(x) * 1e4)
+    other, _, _ = run("balanced_detail", lambda x: torch.zeros_like(x))
+    assert model.skipped == old_model.skipped == len(SIGMAS) - 1 - 2
+    assert model.model_calls == old_model.model_calls == 2 + (len(SIGMAS) - 2)
+    assert report.counts["sa_dense_soft_extrapolation"] > 0
+    assert base_report.counts["sa_dense_soft_extrapolation"] == 0
+    assert report.counts["sa_dense_guard_hold"] < base_report.counts["sa_dense_guard_hold"]
+    assert torch.isfinite(new).all()
+    torch.testing.assert_close(new, other, atol=0, rtol=0)
+    assert not torch.equal(new, old)

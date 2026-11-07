@@ -6,7 +6,8 @@ import math
 
 # Active SA-Solver PECE acceleration: number of leading outer steps whose
 # predicted phase always runs the model. "off" keeps Spectrum's normal cadence.
-SA_PECE_POLICIES = {"off": None, "stable_start": 3, "balanced": 2, "max_speed": 1}
+SA_PECE_POLICIES = {"off": None, "stable_start": 3, "balanced": 2, "max_speed": 1,
+                    "balanced_detail": 2}
 
 
 @dataclass(frozen=True)

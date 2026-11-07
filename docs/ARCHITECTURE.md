@@ -142,6 +142,30 @@ keeps the normal Spectrum cadence. The summary reports the policy and
 `sa_pece_skipped_predictions`. This follows the active-PECE policies of
 Spectrum MiniMax H3.
 
+#### Experimental continuous bounded corrected-endpoint forecast
+
+The optional `balanced_detail` policy retains `balanced`'s two exact
+predicted-phase prefix, skip count, native PECE corrections, and strict
+source/weight/condition validation. It only changes what the solver consumes
+when the half-log-SNR extrapolation ratio
+`alpha = (lambda_i - lambda_last) / (lambda_last - lambda_prev)`
+grows beyond one. The original policies abruptly switch at `alpha>1`
+from a nearly full secant to a zero-displacement hold, introducing a
+discontinuity even at tiny extrapolation-horizon overshoot.
+For the opt-in variant, `w=alpha` within [0,1] and `w=1/alpha` above one.
+The solver consumes `latest + w*(latest-previous)`. The weight is
+nonnegative and at most one, continuous at alpha=1, and decays to zero
+as the horizon grows without a separate hard threshold. It introduces
+no raw stochastic predictor output or fresh Gaussian innovation, and
+makes no additional model evaluations. Incompatible endpoints,
+nonfinite geometry and backwards intervals still fail to an exact
+anchor hold. Existing policies and defaults are unchanged.
+
+Numerical CPU tests verify boundedness, continuity and independence
+from raw stochastic placeholder values. The Krea 2 checkpoint's actual
+CUDA texture/identity quality and runtime have **not** been validated
+for this opt-in variant.
+
 Scale-Locked PR #16 records planner predictor and corrected-state anchors
 independently. Fully locked target predictor and correction steps receive
 their corresponding planner values; the original native predictor/corrector

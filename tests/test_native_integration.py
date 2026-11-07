@@ -725,19 +725,22 @@ def test_sa_solver_native_predictor_and_pece_corrector(native,name,pece,split,st
 
 @pytest.mark.parametrize('name,pece',[('sample_sa_solver_pece',None),('sample_sa_solver',True)])
 @pytest.mark.parametrize('split',[False,True])
-def test_sa_pece_balanced_policy_skips_predicted_phases(native,name,pece,split):
+@pytest.mark.parametrize('policy',['balanced','balanced_detail'])
+def test_sa_pece_balanced_policy_skips_predicted_phases(native,name,pece,split,policy):
     model=tiny_model(native[0])
     options={'predictor_order':3,'corrector_order':4,'tau_func':lambda sigma:.6,'s_noise':.5}
     if pece is not None:
         options['use_pece']=pece
     steps=12
     config=Config(preset='turbo',warmup=2,tail=1,bootstrap=False,
-                  extrapolation_guard_enabled=False,sa_pece_forecast_policy='balanced')
+                  extrapolation_guard_enabled=False,sa_pece_forecast_policy=policy)
     torch.manual_seed(77)
     result,report=run(model,config,steps=steps,split=split,sampler_name=name,sampler_options=options)
     multiplier=2 if split else 1
     assert report['fallback'] is None, report
-    assert report['sa_pece_forecast_policy']=='balanced'
+    assert report['sa_pece_forecast_policy']==policy
+    if policy == 'balanced_detail':
+        assert report['sa_dense_modes']['soft_extrapolation'] > 0, report
     assert report['sa_pece_skipped_predictions']==(steps-2)*multiplier
     # Two actual predicted phases, then exact corrections for every later step.
     assert report['actual']==(2+steps-1)*multiplier, report
