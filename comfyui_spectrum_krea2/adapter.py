@@ -91,6 +91,13 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         # decision: avoid installing the final-layer capture hook and retaining
         # potentially gigabytes of unused predictor history.
         return native()
+    if session.solver_skip and session.active_step is not None and session.disabled_reason is None:
+        # Active-PECE predicted phase owned by the solver: it consumes an
+        # extrapolation of exact corrected results, never this value.
+        session.counts["forecast"] += 1
+        session.counts["pece_solver_skip"] += 1
+        session.served_forecast = True
+        return torch.zeros_like(x)
     inner = executor.class_obj
     if session.disabled_reason or session.active_step is None:
         return native()

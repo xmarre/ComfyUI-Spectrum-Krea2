@@ -26,17 +26,17 @@ Without forecasts the update is the native one, operation for operation.
 import torch
 
 
-def causal_denoised(values, lambdas, steps, target_lambda):
+def causal_denoised(values, lambdas, steps, target_lambda, allow_consecutive=False):
     """Predict SA's denoised variable from actual anchors only.
 
-    Returns ``(value, mode)`` with mode ``hold`` (one anchor or consecutive
-    anchors), ``guard_hold`` (untrusted geometry or more than one anchor
+    Returns ``(value, mode)`` with mode ``hold`` (one anchor, or consecutive
+    anchors unless ``allow_consecutive``: active PECE endpoints are exact), ``guard_hold`` (untrusted geometry or more than one anchor
     interval ahead) or ``extrapolation``. The guard reads one scalar.
     """
     if not values or not len(values) == len(lambdas) == len(steps):
         raise RuntimeError("stochastic SA dense output requires aligned actual anchors")
     latest = values[-1]
-    if len(values) == 1 or steps[-1] - steps[-2] == 1:
+    if len(values) == 1 or (steps[-1] - steps[-2] == 1 and not allow_consecutive):
         return latest.clone(memory_format=torch.contiguous_format), "hold"
     previous = values[-2]
     if previous.shape != latest.shape or previous.dtype != latest.dtype or previous.device != latest.device:
@@ -87,15 +87,28 @@ def sample_sa_solver_isolated(session, model, x, sigmas, extra_args=None, callba
     actual_preds, actual_lambdas, actual_steps = [], [], []
     lower_order_to_end = sigmas[-1].item() == 0
 
+    # Active-PECE acceleration (opt-in): after a protected prefix, the
+    # predicted phase skips the model. Its value only feeds this step's
+    # corrector, and the exact corrected evaluation re-anchors the trajectory.
+    from .config import SA_PECE_POLICIES
+    prefix = SA_PECE_POLICIES[session.config.sa_pece_forecast_policy]
+    accelerated = bool(use_pece and corrector_order > 0 and prefix is not None)
+
     for i in sampling.trange(len(sigmas) - 1, disable=disable):
         session.served_forecast = False
-        denoised = model(x_pred, sigmas[i] * s_in, **extra_args)
+        session.solver_skip = accelerated and i >= max(prefix, 1) and bool(actual_preds)
+        try:
+            denoised = model(x_pred, sigmas[i] * s_in, **extra_args)
+        finally:
+            session.solver_skip = False
         forecast = session.served_forecast
         if forecast:
             session.counts["sa_ephemeral_forecast"] += 1
-            if tau_t > 0 and s_noise > 0 and actual_preds:
-                # x_pred holds a fresh increment the forecast could not see.
-                denoised, mode = causal_denoised(actual_preds, actual_lambdas, actual_steps, lambdas[i])
+            if actual_preds and (accelerated or (tau_t > 0 and s_noise > 0)):
+                # Stochastic input: x_pred holds a fresh increment the forecast
+                # could not see. Accelerated PECE: the solver owns this value.
+                denoised, mode = causal_denoised(actual_preds, actual_lambdas, actual_steps, lambdas[i],
+                                                 allow_consecutive=accelerated)
                 session.counts["sa_dense_output"] += 1
                 session.counts["sa_dense_" + mode] += 1
                 session.sa_dense_steps.append({"step": i, "sigma": round(float(sigmas[i]), 6),

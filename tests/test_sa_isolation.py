@@ -143,3 +143,65 @@ def test_causal_dense_output_is_bounded_and_causal():
     assert mode == "guard_hold" and torch.equal(overlong, b)
     backwards, mode = causal_denoised([a, b], [torch.tensor(0.), torch.tensor(1.)], [2, 4], torch.tensor(.5))
     assert mode == "guard_hold" and torch.equal(backwards, b)
+
+
+class SkipAware(Steps):
+    """Serves Spectrum's solver-owned skip like adapter.diffusion does."""
+
+    def __init__(self, session, model, skip_value):
+        super().__init__(session, model, (), None)
+        self.skip_value = skip_value
+        self.model_calls = 0
+        self.skipped = 0
+
+    def __call__(self, x, sigma, **kwargs):
+        if self.session.solver_skip:
+            self.skipped += 1
+            self.session.served_forecast = True
+            return self.skip_value(x)
+        self.model_calls += 1
+        return self.model(x, sigma, **kwargs)
+
+
+@pytest.mark.parametrize('policy,prefix', [('stable_start', 3), ('balanced', 2), ('max_speed', 1)])
+@pytest.mark.parametrize('stochastic', [False, True])
+def test_accelerated_pece_skips_predictions_without_consuming_them(native, policy, prefix, stochastic):
+    x = torch.randn(1, 2, 4, 6, generator=torch.Generator().manual_seed(11))
+    options = dict(tau_func=(lambda s: 0.8) if stochastic else (lambda s: 0.0),
+                   s_noise=0.7 if stochastic else 0.0, use_pece=True)
+    steps = len(SIGMAS) - 1
+
+    def run(skip_value):
+        session = Session(object(), Config(sa_pece_forecast_policy=policy), [0.0] * steps, None, None, 1, (4, 6))
+        model = SkipAware(session, Model(), skip_value)
+        out = sample_sa_solver_isolated(session, model, x, SIGMAS,
+                                        noise_sampler=noise_sampler_factory(7), **options)
+        return out, session, model
+
+    first, session, model = run(lambda x: torch.full_like(x, 1e3))
+    second, _, _ = run(lambda x: x.clone())
+    torch.testing.assert_close(first, second, atol=0, rtol=0)
+    assert torch.isfinite(first).all()
+    # Actual predicted phases for the protected prefix, then one exact
+    # correction per remaining outer step.
+    assert model.skipped == steps - prefix
+    assert model.model_calls == prefix + (steps - 1)
+    assert session.counts["sa_dense_output"] == steps - prefix
+    assert not session.solver_skip
+
+
+def test_pece_policy_off_and_plain_sa_never_skip(native):
+    x = torch.randn(1, 2, 4, 6, generator=torch.Generator().manual_seed(12))
+    for use_pece, policy in ((True, 'off'), (False, 'balanced')):
+        session = Session(object(), Config(sa_pece_forecast_policy=policy), [0.0] * 10, None, None, 1, (4, 6))
+        model = SkipAware(session, Model(), lambda x: torch.full_like(x, 1e3))
+        expected = run_native(native, SIGMAS, x, tau_func=lambda s: 0.8, s_noise=0.7, use_pece=use_pece)
+        out = sample_sa_solver_isolated(session, model, x, SIGMAS, noise_sampler=noise_sampler_factory(7),
+                                        tau_func=lambda s: 0.8, s_noise=0.7, use_pece=use_pece)
+        assert model.skipped == 0
+        torch.testing.assert_close(out, expected, atol=0, rtol=0)
+
+
+def test_invalid_pece_policy_rejected():
+    with pytest.raises(ValueError):
+        Config(sa_pece_forecast_policy='fastest')

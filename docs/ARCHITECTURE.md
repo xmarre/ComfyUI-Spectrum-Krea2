@@ -126,6 +126,22 @@ counts `sa_ephemeral_forecasts` and `sa_dense_outputs`. If another sampler
 wrapper follows Spectrum's, forecasting falls back to native. The design
 follows the SA and ER-SDE stochastic forecast isolation in Spectrum MiniMax H3.
 
+#### Opt-in active-PECE acceleration
+
+With `sa_pece_forecast_policy` set to `stable_start`, `balanced` or
+`max_speed`, active PECE runs its predicted phase with the model only for the
+first 3, 2 or 1 outer steps. After that the predicted phase is owned by the
+solver: Spectrum returns a placeholder without running the DiT. SA ignores
+that placeholder, and its corrector consumes a causal extrapolation of the
+exact persistent PECE endpoints instead. Consecutive endpoints may be
+extrapolated because each one is an exact corrected evaluation. The
+one-interval guard still falls back to the latest endpoint. Every correction
+remains an exact model evaluation and owns the Adams history and the next
+predictor, so the trajectory is re-anchored at every step. The default `off`
+keeps the normal Spectrum cadence. The summary reports the policy and
+`sa_pece_skipped_predictions`. This follows the active-PECE policies of
+Spectrum MiniMax H3.
+
 Scale-Locked PR #16 records planner predictor and corrected-state anchors
 independently. Fully locked target predictor and correction steps receive
 their corresponding planner values; the original native predictor/corrector

@@ -31,6 +31,11 @@ class SpectrumApplyKrea2:
                 "tooltip": "Limit forecast distance relative to observed actual-history span. Disable to remove only this distance guard; weight stability, finite checks, warmup, Turbo window and tail remain active. Experimental; may reduce image fidelity."}),
             "max_extrapolation_span_ratio": ("FLOAT", {"default": 0.5, "min": 0.05, "max": 8.0, "step": 0.05,
                 "tooltip": "Max forecast gap / retained actual-history span. Default 0.5. Larger values permit farther extrapolation and can cause image artifacts. Ignored when the extrapolation guard is disabled."}),
+            "sa_pece_forecast_policy": (["off", "stable_start", "balanced", "max_speed"], {"default": "off",
+                "tooltip": "SA-Solver PECE only. off: normal Spectrum cadence. Otherwise, after the first 3/2/1 steps "
+                           "(stable_start/balanced/max_speed), each predicted phase skips the model and uses an "
+                           "extrapolation of the exact corrected results; every correction still runs the model. "
+                           "Experimental: compare with off at a matched seed."}),
         }}
 
     RETURN_TYPES = ("MODEL",)
@@ -41,7 +46,8 @@ class SpectrumApplyKrea2:
     def apply(self, model, enabled=True, preset="raw", degree=1, ridge=0.01,
               warmup=4, tail=2, window=1, growth=0.0, max_history=8,
               storage="vram", budget_mb=4096, debug=False, bootstrap=True,
-              extrapolation_guard_enabled=True, max_extrapolation_span_ratio=0.5):
+              extrapolation_guard_enabled=True, max_extrapolation_span_ratio=0.5,
+              sa_pece_forecast_policy="off"):
         from comfy.patcher_extension import WrappersMP
         types = (WrappersMP.SAMPLER_SAMPLE, WrappersMP.PREDICT_NOISE, WrappersMP.DIFFUSION_MODEL)
         installed = any(model.get_wrappers(t, KEY) for t in types)
@@ -57,7 +63,8 @@ class SpectrumApplyKrea2:
         config = Config(enabled, preset, degree, ridge, warmup, tail, window, growth,
                         max_history, storage, budget_mb, debug, bool(bootstrap),
                         extrapolation_guard_enabled=extrapolation_guard_enabled,
-                        max_extrapolation_span_ratio=max_extrapolation_span_ratio)
+                        max_extrapolation_span_ratio=max_extrapolation_span_ratio,
+                        sa_pece_forecast_policy=sa_pece_forecast_policy)
         binding = Binding(config)
         cloned.add_wrapper_with_key(types[0], KEY, binding.sampler)
         cloned.add_wrapper_with_key(types[1], KEY, binding.predict)
