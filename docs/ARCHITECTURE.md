@@ -100,6 +100,32 @@ The report records the additional PECE correction opportunity separately
 from outer-step callbacks; native correction evaluations are still included
 in the actual model-evaluation count.
 
+#### Forecast isolation for SA-Solver
+
+Inside the SDE window, SA adds a fresh Gaussian increment to its predictor
+state before each evaluation. An actual Krea 2 call sees that increment and
+removes it from `denoised = x - sigma * v`. A feature forecast is extrapolated
+from earlier steps and cannot see it, so its denoised value keeps the increment.
+SA would then carry it to the output as per-latent-cell colored speckles.
+
+Forecast-enabled SA and PECE therefore run `sa_isolation.sample_sa_solver_isolated`.
+It uses the native SA equations, coefficient helpers and noise sampler, with
+two ownership rules:
+
+* Only actual denoiser results and exact PECE corrections are persistent
+  Adams history. A forecast is an ephemeral input to the current corrector
+  and predictor only.
+* On a forecast step whose input carries a fresh increment, SA consumes a
+  causal value built only from actual anchors instead of the raw forecast.
+  That value is the latest anchor after consecutive anchors. Otherwise it is
+  a half-log-SNR extrapolation of at most one anchor interval, and it falls
+  back to the latest anchor if the guard fails.
+
+Without forecasts the adapter is the native solver bit for bit. The report
+counts `sa_ephemeral_forecasts` and `sa_dense_outputs`. If another sampler
+wrapper follows Spectrum's, forecasting falls back to native. The design
+follows the SA and ER-SDE stochastic forecast isolation in Spectrum MiniMax H3.
+
 Scale-Locked PR #16 records planner predictor and corrected-state anchors
 independently. Fully locked target predictor and correction steps receive
 their corresponding planner values; the original native predictor/corrector

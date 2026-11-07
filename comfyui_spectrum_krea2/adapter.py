@@ -144,6 +144,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         else:
             stream.last_step = step
             session.counts["forecast"] += 1
+            session.served_forecast = True
             if mode == "bootstrap":
                 session.counts["bootstrap"] += 1
             return output

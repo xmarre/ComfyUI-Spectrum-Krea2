@@ -700,6 +700,10 @@ def test_sa_solver_native_predictor_and_pece_corrector(native,name,pece,split,st
     assert report['forecast']>0
     assert report['denoiser_calls']==(steps+correction)*multiplier
     assert report['actual']+report['forecast']==(steps+correction)*multiplier
+    # Forecasts are isolated from SA history; on stochastic inputs SA consumes
+    # an actual-anchor dense output instead of the increment-blind forecast.
+    assert report['sa_ephemeral_forecasts']==report['forecast']//multiplier
+    assert (report['sa_dense_outputs']>0)==stochastic
     torch.manual_seed(1234)
     same,repeated=run(
         model,Config(preset='turbo',warmup=2,tail=1,bootstrap=False,

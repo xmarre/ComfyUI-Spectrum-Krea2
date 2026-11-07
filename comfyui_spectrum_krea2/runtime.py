@@ -48,6 +48,8 @@ class Session:
     pece_corrector_order: int = 0
     pece_pending_step: int | None = None
     pece_sigmas: tuple = ()
+    # Set when Spectrum served a forecast for the current denoiser opportunity.
+    served_forecast: bool = False
 
     def disable(self, reason):
         if self.disabled_reason is None:
@@ -119,6 +121,8 @@ class Session:
                 "bootstrap_forecast": self.counts["bootstrap"],
                 "pece_corrector_calls": self.counts["pece_correction"],
                 "pece_corrector_evaluations": self.counts["pece_correction_native"],
+                "sa_ephemeral_forecasts": self.counts["sa_ephemeral_forecast"],
+                "sa_dense_outputs": self.counts["sa_dense_output"],
                 "effective_config": {"preset": self.config.preset, "warmup": self.config.warmup,
                                      "tail": self.config.tail, "window": self.config.window,
                                      "degree": self.config.degree,

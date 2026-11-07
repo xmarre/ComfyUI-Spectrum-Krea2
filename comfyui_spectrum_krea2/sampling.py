@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 xmarre
+import copy
 import json
 import inspect
 import logging
@@ -7,6 +8,7 @@ import math
 import torch
 from .compat import verified, model_contract
 from .runtime import CURRENT, REPORTS, FORCE_NATIVE, Session
+from .sa_isolation import sample_sa_solver_isolated
 
 KEY = "spectrum_krea2"
 LOG = logging.getLogger(__name__)
@@ -242,6 +244,24 @@ class Binding:
                     CURRENT.reset(callback_token)
 
         try:
+            if is_sa and not session.native_only and session.disabled_reason is None:
+                # Forecasts must not enter SA's Adams history or carry its
+                # stochastic increments; see sa_isolation.
+                if getattr(executor, "idx", None) != len(getattr(executor, "wrappers", ())) - 1:
+                    session.disable("another sampler wrapper follows the SA forecast-isolation adapter")
+                else:
+                    isolated = copy.copy(executor.class_obj)
+                    function = executor.class_obj.sampler_function
+                    use_pece = function.__name__ == "sample_sa_solver_pece"
+
+                    def sa_function(model, x, run_sigmas, **kwargs):
+                        kwargs.setdefault("use_pece", use_pece)
+                        return sample_sa_solver_isolated(session, model, x, run_sigmas, **kwargs)
+
+                    sa_function.__name__ = function.__name__ + "_spectrum_isolated"
+                    isolated.sampler_function = sa_function
+                    return isolated.sample(model_wrap, sigmas, extra_args, on_step, noise,
+                                           latent_image, denoise_mask, disable_pbar)
             return executor(model_wrap, sigmas, extra_args, on_step, noise,
                             latent_image, denoise_mask, disable_pbar)
         finally:
