@@ -275,9 +275,13 @@ class Binding:
                 prior = session.active_step
                 session.active_step = None
                 session.counts["pece_correction"] += 1
+                actual_before = session.counts["actual"]
                 try:
                     return executor(x, timestep, model_options or {}, seed)
                 finally:
+                    session.counts["pece_correction_native"] += (
+                        session.counts["actual"] - actual_before
+                    )
                     session.active_step = prior
             session.disable("PECE correction sigma/order mismatch")
         session.predict_calls += 1

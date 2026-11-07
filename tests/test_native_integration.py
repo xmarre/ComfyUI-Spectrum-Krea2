@@ -695,7 +695,8 @@ def test_sa_solver_native_predictor_and_pece_corrector(native,name,pece,split,st
     multiplier=2 if split else 1
     assert report['fallback'] is None, report
     assert report['outer_steps']==steps
-    assert report['pece_corrector_evaluations']==correction
+    assert report['pece_corrector_calls']==correction
+    assert report['pece_corrector_evaluations']==correction*multiplier
     assert report['forecast']>0
     assert report['denoiser_calls']==(steps+correction)*multiplier
     assert report['actual']+report['forecast']==(steps+correction)*multiplier
@@ -705,7 +706,7 @@ def test_sa_solver_native_predictor_and_pece_corrector(native,name,pece,split,st
                      extrapolation_guard_enabled=False),
         steps=steps,split=split,sampler_name=name,sampler_options=options)
     torch.testing.assert_close(accelerated,same,atol=0,rtol=0)
-    assert repeated['pece_corrector_evaluations']==correction
+    assert repeated['pece_corrector_evaluations']==correction*multiplier
     torch.manual_seed(1234)
     native_result,baseline=run(model,Config(window=0),steps=steps,split=split,
                                sampler_name=name,sampler_options=options)
@@ -714,7 +715,7 @@ def test_sa_solver_native_predictor_and_pece_corrector(native,name,pece,split,st
                                    sampler_name=name,sampler_options=options)
     torch.testing.assert_close(native_result,native_again,atol=0,rtol=0)
     assert baseline['forecast']==0 and baseline['fallback'] is None
-    assert baseline_again['pece_corrector_evaluations']==correction
+    assert baseline_again['pece_corrector_evaluations']==correction*multiplier
     assert CURRENT.get() is None and not model.last._forward_pre_hooks
 
 

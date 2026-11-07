@@ -109,6 +109,46 @@ def main():
         torch.testing.assert_close(output,repeated,atol=0,rtol=0)
         records.append({'new_solver_turbo':sampler,**report})
 
+
+    # PECE's corrected-state evaluations happen after the step callback.
+    # Validate the real ComfyUI CFGGuider and native SA-Solver rather than
+    # relying only on the isolated WrapperExecutor fixture.
+    for solver in ("sa_solver", "sa_solver_pece"):
+        noise_sa = torch.randn(1,16,1,4,6)
+        context_sa = torch.randn(1,3,32)
+        positive_sa = [[context_sa, {}]]
+        negative_sa = [[context_sa*.2, {}]]
+        native_sa, _ = sample(model, noise_sa, positive_sa, negative_sa, 1.,
+                              solver, steps=14)
+        exact_sa, exact_reports = sample(
+            node.apply(model, window=0)[0], noise_sa, positive_sa,
+            negative_sa, 1., solver, steps=14,
+        )
+        torch.testing.assert_close(exact_sa, native_sa, atol=0, rtol=0)
+        assert exact_reports[0]["fallback"] is None
+        assert exact_reports[0]["forecast"] == 0
+        selected_sa = node.apply(
+            model, preset="turbo", warmup=2, tail=1, bootstrap=False,
+            extrapolation_guard_enabled=False,
+        )[0]
+        result, reports_sa = sample(
+            selected_sa, noise_sa, positive_sa, negative_sa, 1.,
+            solver, steps=14,
+        )
+        report = reports_sa[0]
+        assert report["fallback"] is None and report["forecast"] > 0, report
+        assert report["outer_steps"] == 14, report
+        corrections = 13 if solver == "sa_solver_pece" else 0
+        assert report["pece_corrector_evaluations"] == corrections, report
+        assert report["actual"] + report["forecast"] == 14 + corrections, report
+        repeat, repeated = sample(
+            selected_sa, noise_sa, positive_sa, negative_sa, 1.,
+            solver, steps=14,
+        )
+        torch.testing.assert_close(result, repeat, atol=0, rtol=0)
+        assert repeated[0]["actual"] == report["actual"]
+        records.append({"native_sa_solver": solver, **report})
+
     # Exercise real weight patching and shared model restoration using a standard
     # native LoRA adapter. No custom forward or synthetic patcher is used.
     patched=model.clone()
