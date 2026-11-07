@@ -212,16 +212,16 @@ def test_fallback_diagnostic_reports_only_names_and_owner(providers):
     assert CONTRACT_REVISION == "qualified-krea2-v2"
 
 
-def test_audited_kj_preview_is_allowed_only_at_outer_sample(providers, monkeypatch):
-    from comfyui_spectrum_krea2 import qualified_patches as q
-    class FakePreview:
-        def __call__(self, *args):
-            pass
+def test_kj_preview_registration_is_version_independent(providers):
+    from comfyui_spectrum_krea2.qualified_patches import qualify, matches
+    # A future preview callback may be a callable object with any name,
+    # module, signature or implementation. Its OUTER_SAMPLE identity does not
+    # change the native sampler or transformer contracts observed inside.
+    class PreviewVNext:
+        def __call__(self, executor, *args, **kwargs):
+            return executor(*args, **kwargs)
 
-    preview = FakePreview()
-    # The real upstream source fingerprint is checked in the full-native
-    # integration lane; isolate identity/placement checks in this fixture.
-    monkeypatch.setattr(q, "_audited_kj_preview_type", lambda cls: cls is FakePreview)
+    preview = PreviewVNext()
     opts = model_options(providers, sol=True, diff=False)
     wraps = opts["transformer_options"]["wrappers"]
     wraps.setdefault("outer_sample", {})["kj_preview_override"] = [preview]
@@ -229,13 +229,42 @@ def test_audited_kj_preview_is_allowed_only_at_outer_sample(providers, monkeypat
     assert reason is None and policy.kj_preview_wrapper is preview
     assert matches(policy, opts["transformer_options"])
 
-    wraps["outer_sample"]["kj_preview_override"] = [object()]
+    # A method or code-object mutation during the active invocation must
+    # invalidate its snapshot even when another invocation can requalify.
+    original_method = PreviewVNext.__call__
+    try:
+        PreviewVNext.__call__ = lambda self, *a, **kw: None
+        assert not matches(policy, opts["transformer_options"])
+        next_policy, reason = qualify(opts)
+        assert reason is None and next_policy.kj_preview_wrapper is preview
+        assert matches(next_policy, opts["transformer_options"])
+    finally:
+        PreviewVNext.__call__ = original_method
+    assert matches(policy, opts["transformer_options"])
+
+    replacement = PreviewVNext()
+    wraps["outer_sample"]["kj_preview_override"] = [replacement]
     assert not matches(policy, opts["transformer_options"])
-    wraps["outer_sample"]["kj_preview_override"] = [preview, object()]
-    assert qualify(opts)[1] == "unverified KJ PreviewOverride wrapper source or ownership"
+    assert qualify(opts)[1] is None
+    wraps["outer_sample"]["kj_preview_override"] = [preview, replacement]
+    assert qualify(opts)[1] == "invalid KJ PreviewOverride wrapper registration"
     wraps["outer_sample"].pop("kj_preview_override")
     wraps["diffusion_model"]["kj_preview_override"] = [preview]
-    assert qualify(opts)[1] == "unverified KJ PreviewOverride wrapper source or ownership"
+    assert qualify(opts)[1] == "invalid KJ PreviewOverride wrapper registration"
+
+
+def test_kj_preview_still_rejects_unknown_numerical_modifiers(providers):
+    from comfyui_spectrum_krea2.qualified_patches import qualify
+    opts = model_options(providers, sol=True, diff=False)
+    opts["transformer_options"]["wrappers"].setdefault("outer_sample", {})[
+        "kj_preview_override"
+    ] = [lambda executor, *a, **kw: executor(*a, **kw)]
+    assert qualify(opts)[1] is None
+    opts["transformer_options"]["wrappers"]["diffusion_model"]["untrusted"] = [
+        lambda *args: None
+    ]
+    assert qualify(opts)[1] == "external transformer patches or wrappers are active"
+
 
 
 def test_kj_preview_unverified_or_malformed_still_falls_back(providers):
@@ -243,7 +272,7 @@ def test_kj_preview_unverified_or_malformed_still_falls_back(providers):
     wraps = opts["transformer_options"]["wrappers"]
     wraps.setdefault("outer_sample", {})["kj_preview_override"] = [object()]
     policy, reason = qualify(opts)
-    assert policy is None and reason == "unverified KJ PreviewOverride wrapper source or ownership"
+    assert policy is None and reason == "invalid KJ PreviewOverride wrapper registration"
     wraps["outer_sample"]["kj_preview_override"] = []
     policy, reason = qualify(opts)
     assert policy is None and reason == "unverified KJ PreviewOverride wrapper source or ownership"

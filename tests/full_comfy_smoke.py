@@ -186,7 +186,6 @@ def main():
         import logging
         import time
         import types
-        from comfyui_spectrum_krea2.qualified_patches import _audited_kj_preview_type
         path = source_root.resolve() / "nodes/preview_override_node.py"
         tree = ast.parse(path.read_bytes(), filename=str(path))
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
@@ -219,7 +218,6 @@ def main():
         exec(compile(ast.Module(body=[cls], type_ignores=[]), str(path), "exec"),
              module.__dict__)
         klass = module._PreviewOverrideWrapper
-        assert _audited_kj_preview_type(klass)
         return klass(512, None, 80, False, preview_frames=1, tiny_vae="none")
 
     def with_kj(model_patcher, source_root=None):
@@ -281,8 +279,9 @@ def main():
             torch.testing.assert_close(old_output, baseline_output, atol=0, rtol=0)
             records.append({"kj_historical_source": root.name, **report})
 
-        # Replacing the class method after a previous successful admission
-        # must invalidate both the stored invocation and the next run.
+        # Callback implementation is not version-pinned. A changed callback
+        # method can be admitted in a NEW invocation; a mutation during an
+        # existing invocation must invalidate the prior identity snapshot.
         from comfy.patcher_extension import WrappersMP
         from comfyui_spectrum_krea2.qualified_patches import qualify, matches
         preview = selected.get_wrappers(WrappersMP.OUTER_SAMPLE, "kj_preview_override")[-1]
@@ -301,16 +300,15 @@ def main():
         try:
             preview_cls.__call__ = lambda self, executor, *a, **kw: executor(*a, **kw)
             assert not matches(policy, admitted_options["transformer_options"])
-            rejected, reason = qualify(admitted_options)
-            assert rejected is None and reason == (
-                "unverified KJ PreviewOverride wrapper source or ownership"
-            )
+            requalified, reason = qualify(admitted_options)
+            assert reason is None and requalified.kj_preview_wrapper is preview
+            assert matches(requalified, admitted_options["transformer_options"])
         finally:
             preview_cls.__call__ = original_preview_call
 
-        # A code-object swap preserves the function identity but changes the
-        # executed semantics. Detect it in both the active policy and future
-        # source qualification (rather than trusting inspect.getsource alone).
+        # A code-object swap preserves callable identity, but must invalidate
+        # the active invocation. A new invocation revalidates the actual
+        # solver and model state with whatever callback KJ currently supplies.
         original_code = original_preview_call.__code__
         def substitute_call(self, executor, noise, latent_image, sampler,
                             sigmas, denoise_mask, callback, disable_pbar,

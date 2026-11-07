@@ -6,11 +6,6 @@ Only the reviewed Sol-Krea2 and Krea2 Diff-Aid implementations are eligible.
 Unknown patches, wrapper owners and model-function decorators fail closed.
 """
 from dataclasses import dataclass
-import ast
-import inspect
-import textwrap
-import types
-from pathlib import Path
 import sys
 
 import torch
@@ -20,143 +15,12 @@ SOL_KEY = "sol_krea2_sparse_attention_v1"
 SPECTRUM_KEY = "spectrum_krea2"
 DIFFAID_WRAPPER = "diffaid_krea2_text_residual"
 KJ_PREVIEW_KEY = "kj_preview_override"
-# KJNodes has several released preview_override_node.py revisions. A whole-file
-# digest also changes for unrelated encoders, imports and UI controls, so it
-# incorrectly rejects compatible preview-only callbacks. Qualify the *actual*
-# registered method's sampler/callback protocol, not an arbitrary module key.
-_KJ_ARGS = ("self", "executor", "noise", "latent_image", "sampler",
-            "sigmas", "denoise_mask", "callback", "disable_pbar", "seed",
-            "latent_shapes")
-_KJ_FORWARD = ("noise", "latent_image", "sampler", "sigmas",
-               "denoise_mask", "new_callback", "disable_pbar", "seed")
-_KJ_CALLBACK = ("step", "x0", "x", "total_steps_")
-_KJ_IMMUTABLE = frozenset({"noise", "latent_image", "sampler", "sigmas",
-                          "denoise_mask", "seed", "latent_shapes",
-                          "callback", "original_callback", "x0", "x"})
-
-
-def _kj_name(node, name):
-    return isinstance(node, ast.Name) and node.id == name
-
-
-def _code_contract(code):
-    """Compare executable semantics, not source-line offsets or qualnames."""
-    return (
-        code.co_code, code.co_argcount, code.co_posonlyargcount,
-        code.co_kwonlyargcount, code.co_nlocals, code.co_flags,
-        code.co_names, code.co_varnames, code.co_cellvars,
-        code.co_freevars,
-        tuple(_code_contract(v) if isinstance(v, types.CodeType) else v
-              for v in code.co_consts),
-        getattr(code, "co_exceptiontable", b""),
-    )
-
-
-def _audited_kj_preview_type(cls):
-    """Check a registered KJNodes preview-only OUTER_SAMPLE delegate.
-
-    Versions may change encoders and UI without altering the sampling
-    contract. Source and runtime callable must be the same registered method;
-    any change to forwarding, callback, or cleanup falls back to native.
-    """
-    if cls.__name__ != "_PreviewOverrideWrapper":
-        return False
-    fn = cls.__dict__.get("__call__")
-    module = sys.modules.get(cls.__module__)
-    if (not inspect.isfunction(fn) or module is None or
-            getattr(module, "_PreviewOverrideWrapper", None) is not cls or
-            not (cls.__module__ == "preview_override_node" or
-                 cls.__module__.endswith(".preview_override_node")) or
-            fn.__module__ != cls.__module__):
-        return False
-    try:
-        filename = inspect.getsourcefile(fn)
-        if (filename is None or Path(filename).name != "preview_override_node.py"
-                or Path(filename).resolve() != Path(module.__file__).resolve()):
-            return False
-        source = textwrap.dedent(inspect.getsource(fn))
-        tree = ast.parse(source)
-    except (OSError, TypeError, ValueError, SyntaxError, AttributeError):
-        return False
-    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.FunctionDef):
-        return False
-    method = tree.body[0]
-    # The file's checked syntax must be the in-memory method Python will
-    # actually execute. inspect.getsource alone would miss a __code__ swap.
-    try:
-        compiled = compile(tree, "<kj_preview_contract>", "exec")
-        expected = next(value for value in compiled.co_consts
-                        if isinstance(value, types.CodeType)
-                        and value.co_name == "__call__")
-    except (ValueError, StopIteration, SyntaxError, TypeError):
-        return False
-    if _code_contract(fn.__code__) != _code_contract(expected):
-        return False
-    params = method.args
-    if (method.name != "__call__" or
-            tuple(a.arg for a in params.posonlyargs + params.args) != _KJ_ARGS or
-            params.kwonlyargs or params.vararg or params.kwarg or
-            params.defaults or params.kw_defaults or method.decorator_list):
-        return False
-
-    # Only one native sample invocation, with the original sampler, sigma,
-    # noise, seed and masks untouched. The sole intervention is replacing
-    # the callback with the KJ preview callback.
-    calls = [n for n in ast.walk(method)
-             if isinstance(n, ast.Call) and _kj_name(n.func, "executor")]
-    if len(calls) != 1:
-        return False
-    call = calls[0]
-    if (tuple(n.id if isinstance(n, ast.Name) else None for n in call.args)
-            != _KJ_FORWARD or len(call.keywords) != 1 or
-            call.keywords[0].arg != "latent_shapes" or
-            not _kj_name(call.keywords[0].value, "latent_shapes")):
-        return False
-    if not any(
-        isinstance(n, ast.Try) and n.finalbody and
-        any(isinstance(stmt, ast.Return) and stmt.value is call
-            for stmt in n.body)
-        for n in ast.walk(method)
-    ):
-        return False
-
-    # KJ forwards the outer solver callback unmodified, both when preview
-    # decoding succeeds and when it produces no frame.
-    callbacks = [n for n in method.body
-                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-                 and n.name == "new_callback"]
-    if len(callbacks) != 1 or isinstance(callbacks[0], ast.AsyncFunctionDef):
-        return False
-    cb = callbacks[0]
-    if tuple(a.arg for a in cb.args.args) != _KJ_CALLBACK:
-        return False
-    forwards = [n for n in ast.walk(cb)
-                if isinstance(n, ast.Call) and
-                _kj_name(n.func, "original_callback")]
-    if (len(forwards) != 2 or
-            any(tuple(n.id if isinstance(n, ast.Name) else None for n in c.args)
-                != _KJ_CALLBACK or c.keywords for c in forwards)):
-        return False
-    initial = [n for n in ast.walk(method) if isinstance(n, ast.Assign)
-               and len(n.targets) == 1 and
-               _kj_name(n.targets[0], "original_callback") and
-               _kj_name(n.value, "callback")]
-    if len(initial) != 1:
-        return False
-
-    # Reject source revisions that rebind any original sampler input or
-    # mutate the callback's original x0/x variables in-place. This deliberately
-    # excludes unknown future KJ behavior rather than accepting its key.
-    for node in ast.walk(method):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            if node.id in _KJ_IMMUTABLE:
-                if not (node.id == "original_callback" and node is initial[0].targets[0]):
-                    # Formal parameters appear only as ast.arg, not ast.Name.
-                    return False
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in {"eval", "exec", "compile"}:
-                return False
-    return True
+# KJNodes Model Preview Override is an OUTER_SAMPLE observer, not a
+# denoiser or sampler replacement. Once the native sampler wrapper is entered,
+# validate its *effective* solver, patches, conditioning and per-step callback
+# ordering. Neither KJNodes' release nor its callback implementation is part
+# of that contract. The stable wrapper registration key identifies this
+# optional observer; unknown keys and all denoiser wrappers remain excluded.
 
 
 def _registered_type(value, name):
@@ -345,17 +209,17 @@ def qualify(model_options):
                 any(type(k) is not int or not 0 <= k < 28 for k in blocks)):
             return None, "dynamic or invalid Krea 2 Diff-Aid patch configuration"
 
-    # A preview-only OUTER_SAMPLE wrapper may wrap the callback without
-    # altering the denoiser, solver state or conditioning. Admit only the
-    # exact upstream implementation audited above. Its source and instance
-    # must both be verified; no key-only allowlist is sufficient.
+    # OUTER_SAMPLE preview observers are outside the solver/denoiser path.
+    # Admit the registered KJ observer regardless of its implementation
+    # version. All numerical contracts are verified on the actual sampling
+    # invocation and every subsequent model evaluation.
     kj_preview = None
     kj_entries = [(kind, values) for kind, key, values in entries if key == KJ_PREVIEW_KEY]
     if kj_entries:
         if (len(kj_entries) != 1 or kj_entries[0][0] != "outer_sample" or
                 len(kj_entries[0][1]) != 1 or
-                not _audited_kj_preview_type(type(kj_entries[0][1][0]))):
-            return None, "unverified KJ PreviewOverride wrapper source or ownership"
+                not callable(kj_entries[0][1][0])):
+            return None, "invalid KJ PreviewOverride wrapper registration"
         kj_preview = kj_entries[0][1][0]
 
     allowed = {(kind, key) for kind, key, _ in entries if key == SPECTRUM_KEY}
@@ -382,7 +246,7 @@ def qualify(model_options):
     return QualifiedPatches(
         sol_override, diffaid_patch, diffaid_wrapper, kj_preview,
         type(kj_preview).__call__ if kj_preview is not None else None,
-        type(kj_preview).__call__.__code__ if kj_preview is not None else None,
+        getattr(type(kj_preview).__call__, "__code__", None) if kj_preview is not None else None,
         frozen,
     ), None
 
@@ -414,7 +278,7 @@ def matches(policy, trans):
         return False
     if (policy.kj_preview_wrapper is not None and
             (type(policy.kj_preview_wrapper).__call__ is not policy.kj_preview_method or
-             policy.kj_preview_method.__code__ is not policy.kj_preview_code)):
+             getattr(policy.kj_preview_method, "__code__", None) is not policy.kj_preview_code)):
         return False
     try:
         wrapper_items = list(_entries(_wrappers(trans) or {}))
