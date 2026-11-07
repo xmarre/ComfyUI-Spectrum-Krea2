@@ -75,8 +75,13 @@ class History:
             raise ForecastUnavailable("prediction must be causal and inside the sampling domain")
         span = self.coordinates[-1] - self.coordinates[0]
         gap = coordinate - self.coordinates[-1]
-        if span < 1e-10 or gap > 0.5 * span + 1e-12:
-            raise ForecastUnavailable("extrapolation exceeds half the retained history span")
+        if span < 1e-10:
+            raise ForecastUnavailable("retained actual-history span is too small")
+        if (self.config.extrapolation_guard_enabled and
+                gap > self.config.max_extrapolation_span_ratio * span + 1e-12):
+            if self.config.max_extrapolation_span_ratio == 0.5:
+                raise ForecastUnavailable("extrapolation exceeds half the retained history span")
+            raise ForecastUnavailable("extrapolation exceeds configured history-span limit")
         if self._factor is None:
             design = chebyshev(self.coordinates, self.config.degree)
             gram = design.T @ design
