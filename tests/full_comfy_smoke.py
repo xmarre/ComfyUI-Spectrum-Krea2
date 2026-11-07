@@ -18,6 +18,8 @@ def main():
     p.add_argument('--sol-root',type=pathlib.Path)
     p.add_argument('--diffaid-root',type=pathlib.Path)
     p.add_argument('--kj-root',type=pathlib.Path)
+    p.add_argument('--kj-legacy-root',type=pathlib.Path)
+    p.add_argument('--kj-older-root',type=pathlib.Path)
     args=p.parse_args()
     sys.path[:0]=[str(args.comfy_root.resolve()),str(pathlib.Path(__file__).resolve().parents[1])]
     sys.argv=[sys.argv[0],'--cpu','--use-pytorch-cross-attention','--disable-all-custom-nodes']
@@ -169,31 +171,24 @@ def main():
         finally:
             comfy.samplers.KSAMPLER.sample=original_sample
 
-    def make_kj_preview():
-        """Load the actual audited upstream KJ wrapper class with preview I/O
-        suppressed by fixture helpers; do not reimplement its __call__."""
-        # Keep one registered Python class across cloned patchers. Replacing
-        # the module would invalidate earlier instances' owner identity.
-        existing = sys.modules.get("kj_preview_fixture.preview_override_node")
+    def make_kj_preview(source_root=None):
+        """Load a genuine KJNodes callback source with preview I/O suppressed."""
+        source_root = source_root or args.kj_root
+        # Keep distinct real source versions in distinct registered modules.
+        package_name = "kj_preview_" + source_root.name.lstrip("_").replace("-", "_")
+        module_name = package_name + ".preview_override_node"
+        existing = sys.modules.get(module_name)
         if existing is not None:
             return existing._PreviewOverrideWrapper(
                 512, None, 80, False, preview_frames=1, tiny_vae="none",
             )
         import ast
-        import hashlib
         import logging
         import time
         import types
-        from comfyui_spectrum_krea2.qualified_patches import (
-            KJ_PREVIEW_BLOB_SHA, _audited_kj_preview_type,
-        )
-        path = args.kj_root.resolve() / "nodes/preview_override_node.py"
-        raw = path.read_bytes()
-        sha = hashlib.sha1(
-            b"blob " + str(len(raw)).encode("ascii") + b"\x00" + raw
-        ).hexdigest()
-        assert sha == KJ_PREVIEW_BLOB_SHA, (sha, KJ_PREVIEW_BLOB_SHA)
-        tree = ast.parse(raw, filename=str(path))
+        from comfyui_spectrum_krea2.qualified_patches import _audited_kj_preview_type
+        path = source_root.resolve() / "nodes/preview_override_node.py"
+        tree = ast.parse(path.read_bytes(), filename=str(path))
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
                    and n.name == "_PreviewOverrideWrapper")
 
@@ -203,8 +198,6 @@ def main():
             def shutdown(self, drain_timeout=5.0):
                 pass
 
-        package_name = "kj_preview_fixture"
-        module_name = package_name + ".preview_override_node"
         sys.modules.setdefault(package_name, types.ModuleType(package_name))
         module = types.ModuleType(module_name)
         module.__file__ = str(path)
@@ -229,11 +222,11 @@ def main():
         assert _audited_kj_preview_type(klass)
         return klass(512, None, 80, False, preview_frames=1, tiny_vae="none")
 
-    def with_kj(model_patcher):
+    def with_kj(model_patcher, source_root=None):
         from comfy.patcher_extension import WrappersMP
         copied = model_patcher.clone()
         copied.add_wrapper_with_key(
-            WrappersMP.OUTER_SAMPLE, "kj_preview_override", make_kj_preview(),
+            WrappersMP.OUTER_SAMPLE, "kj_preview_override", make_kj_preview(source_root),
         )
         return copied
 
@@ -272,6 +265,22 @@ def main():
             torch.testing.assert_close(output, baseline_output, atol=0, rtol=0)
             records.append({"kj_preview": order, **report})
 
+        # Validate released KJNodes revisions with nonidentical full-file
+        # bytes, including their original callback implementations.
+        for root in (args.kj_legacy_root, args.kj_older_root):
+            if root is None:
+                continue
+            selected_old = node.apply(with_kj(model, root), **chosen_options)[0]
+            old_output, old_reports = sample(
+                selected_old, noise_kj, pos_kj, neg_kj, 1., "er_sde", steps=14,
+            )
+            assert len(old_reports) == 1
+            report = old_reports[0]
+            assert report["fallback"] is None and report["forecast"] > 0, report
+            assert report["actual"] + report["forecast"] == 14
+            torch.testing.assert_close(old_output, baseline_output, atol=0, rtol=0)
+            records.append({"kj_historical_source": root.name, **report})
+
         # Replacing the class method after a previous successful admission
         # must invalidate both the stored invocation and the next run.
         from comfy.patcher_extension import WrappersMP
@@ -298,6 +307,26 @@ def main():
             )
         finally:
             preview_cls.__call__ = original_preview_call
+
+        # A code-object swap preserves the function identity but changes the
+        # executed semantics. Detect it in both the active policy and future
+        # source qualification (rather than trusting inspect.getsource alone).
+        original_code = original_preview_call.__code__
+        def substitute_call(self, executor, noise, latent_image, sampler,
+                            sigmas, denoise_mask, callback, disable_pbar,
+                            seed, latent_shapes):
+            return executor(noise, latent_image, sampler, sigmas, denoise_mask,
+                            callback, disable_pbar, seed, latent_shapes=latent_shapes)
+        try:
+            original_preview_call.__code__ = substitute_call.__code__
+            assert not matches(policy, admitted_options["transformer_options"])
+            rejected, reason = qualify(admitted_options)
+            assert rejected is None and reason == (
+                "unverified KJ PreviewOverride wrapper source or ownership"
+            )
+        finally:
+            original_preview_call.__code__ = original_code
+
         recovered, reason = qualify(admitted_options)
         assert reason is None and recovered.kj_preview_wrapper is preview
 
