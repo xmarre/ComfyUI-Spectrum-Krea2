@@ -275,4 +275,4 @@ def test_kj_preview_unverified_or_malformed_still_falls_back(providers):
     assert policy is None and reason == "invalid KJ PreviewOverride wrapper registration"
     wraps["outer_sample"]["kj_preview_override"] = []
     policy, reason = qualify(opts)
-    assert policy is None and reason == "unverified KJ PreviewOverride wrapper source or ownership"
+    assert policy is None and reason == "invalid KJ PreviewOverride wrapper registration"
