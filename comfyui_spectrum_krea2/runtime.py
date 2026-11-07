@@ -15,6 +15,7 @@ REPORTS = contextvars.ContextVar("spectrum_krea2_reports", default=None)
 @dataclass
 class Stream:
     history: History
+    route: str | None = None
     last_step: int = -1
     last_actual: int = -1
     actual_anchors: int = 0
@@ -38,6 +39,11 @@ class Session:
     disabled_reason: str | None = None
     peak_history_bytes: int = 0
     weight_owner: object = None
+    patch_policy: object = None
+    pece_enabled: bool = False
+    pece_corrector_order: int = 0
+    pece_pending_step: int | None = None
+    pece_sigmas: tuple = ()
 
     def disable(self, reason):
         if self.disabled_reason is None:
@@ -105,8 +111,12 @@ class Session:
                 "denoiser_calls": self.counts["actual"] + self.counts["forecast"],
                 "outer_steps": self.step, "peak_history_bytes": self.peak_history_bytes,
                 "bootstrap_forecast": self.counts["bootstrap"],
+                "pece_corrector_calls": self.counts["pece_correction"],
+                "pece_corrector_evaluations": self.counts["pece_correction_native"],
                 "effective_config": {"preset": self.config.preset, "warmup": self.config.warmup,
                                      "tail": self.config.tail, "window": self.config.window,
                                      "degree": self.config.degree,
-                                     "bootstrap": self.config.bootstrap_active},
+                                     "bootstrap": self.config.bootstrap_active,
+                                     "extrapolation_guard_enabled": self.config.extrapolation_guard_enabled,
+                                     "max_extrapolation_span_ratio": self.config.max_extrapolation_span_ratio},
                 "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons)}

@@ -47,10 +47,66 @@ The capture pre-hook is installed only around an actual native call and removed 
 
 For actual coordinates `u_j`, design matrix `D[j,m]=T_m(u_j)` uses `T_0=1`, `T_1=u`, `T_m=2u*T_(m-1)-T_(m-2)`. Ridge fits `(D^T D + lambda I) C = D^T H`. Instead of retaining full feature coefficients, prediction evaluates small history weights `w = phi(u) (D^T D + lambda I)^(-1) D^T`, then accumulates `sum_j w_j H_j` in bounded FP32 chunks. The small CPU system uses FP64 Cholesky with a bounded jitter ladder. Regression matrices are invalidated when actual history changes.
 
-Forecasted features never enter actual history. Predictions require at least degree+1 actual anchors, increasing coordinates, a target inside the full normalized domain, a forecast gap no larger than half the retained history span, and finite bounded history weights (`L1 <= 8`). These engineering bounds limit uncontrolled extrapolation without establishing visual error bounds for Krea 2. Predictions and projected outputs are checked for finite values before entering native sampler state, requiring two explicit device synchronizations per forecast. Safety checking has real overhead; benchmark it.
+Forecasted features never enter actual history. Predictions require at least degree+1 actual anchors, strictly increasing coordinates, a target inside the full normalized domain, a nondegenerate retained history span, and finite bounded history weights (`L1 <= 8`). The additional extrapolation-distance guard defaults to `gap <= 0.5 * history_span` and is independently configurable using `extrapolation_guard_enabled` and `max_extrapolation_span_ratio` (0.05–8.0). Disabling it does not disable the weight bound, domain or nonfinite checks. A ratio other than 0.5 is an unvalidated quality tradeoff, not proof of accurate long-range feature forecasting. Predictions and projected outputs are checked for finite values before entering native sampler state, requiring two explicit device synchronizations per forecast. Safety checking has real overhead; benchmark it.
 
 Retained snapshots stay in model dtype on VRAM or CPU. The configured byte budget is shared across streams and oldest entries from the largest stream are evicted before retention. A feature too large to retain the required anchors is not cached. Temporaries include one captured feature, predicted feature/output, model activations, finite-check tensors and <=4 MiB FP32 accumulation chunks plus source-transfer chunks. Peak allocator memory can exceed the retained-history budget. No RNG calls are introduced by capture, fitting, scheduling or forecasting.
 
 ## Boundaries
 
 The native model class, sampler entrypoint and relevant model/solver AST contracts are checked at runtime. Known backend attention and weight-operation dispatch are retained on actual calls. Unknown forward replacements, hooks or execution contracts bypass acceleration. The compatibility checks cannot establish behavior for arbitrary third-party code mutating model internals during execution. GPU checkpoints, FP8/GGUF loaders, LoRA images, reference semantics and each attention backend need separate empirical validation.
+
+### Additional native one-call deterministic solvers
+
+The audited solver gate allows native `sample_res_multistep` (and its exact `res_multistep` delegate with `eta=0, cfg_pp=False`) and `sample_gradient_estimation` (with `cfg_pp=False`, default `ge_gamma=2`). Both perform exactly one denoiser call and one callback per input sigma step and consume only the denoised prediction for their state/history. Spectrum may replace that prediction with a feature forecast, preserving native solver integration and state update order. Source AST fingerprints pin each function; mutable `extra_options` are refused for these solvers. This is an empirical feature approximation, **not** mathematical equivalence to full native model evaluation.
+
+### DEIS and iPNDM family (2026-11-06)
+
+DEIS (`sample_deis`), iPNDM (`sample_ipndm`) and iPNDM-V (`sample_ipndm_v`) have one denoiser evaluation and one callback per native sigma step. Their finite multistep derivative histories consume the forecasted prediction through the original ComfyUI update equations; no solver reimplementation or bypass of previous-state bookkeeping is necessary. Their native function AST contracts are pinned. For DEIS, `get_deis_coeff_list`, `edm2t`, `cal_poly`, `cal_intergrand` and `t2alpha_fn` are also source-audited, so a modified coefficient implementation disables Spectrum. Default native options are required (DEIS max_order=3, deis_mode='tab'; iPNDM family max_order=4); custom sampler options fall back. Spectrum's history starts anew for each Scale-Locked invocation and never reuses features across resolution changes. The feature extrapolation is a model-output approximation, not mathematical equivalence to full native DiT evaluation.
+
+
+### Native ER-SDE forecast qualification
+
+ComfyUI's `sample_er_sde` performs one denoiser evaluation and one callback per native outer step. It then integrates a first-, second-, or third-order VP reverse-time SDE update from the denoised prediction, and optionally adds an independent Gaussian stochastic increment. Spectrum may forecast the denoised prediction at eligible steps; it never substitutes an Euler update, changes the native solver state, or consumes the stochastic noise stream itself. Independent per-run forecast histories are retained and cleared at solver invocation boundaries, including Scale-Locked's restarted resolution stages.
+
+The native solver corrects an initial flow sigma of 1.0 to a finite-log-SNR coordinate. Spectrum computes its forecast coordinates using the same native `offset_first_sigma_for_snr` helper. Its source fingerprint is verified, as are `sample_er_sde` and `sigma_to_half_log_snr`; any modified source fails closed to ordinary native sampling. The only recognized sampler overrides are a finite nonnegative `s_noise`, a `max_stage` in 1–3, and callable `noise_scaler`/`noise_sampler`. Scale-Locked supplies patch-phase Gaussian-coupled per-step increments across resolutions, keyed by the absolute step and seed. These stochastic inputs do not enter Spectrum feature history. Native and no-forecast identity, repeatability, source mutation rejection, and CPU native Krea integration are necessary structural checks, not validation of stochastic visual quality or GPU acceleration.
+
+
+### Qualified KJNodes preview-only wrapper
+
+KJNodes' `_PreviewOverrideWrapper` is an `OUTER_SAMPLE` wrapper that decorates the progress callback. The audited source calls the underlying sampler once, forwards the original callback once per outer step, and restores temporary previewer method replacements in `finally`. It does not substitute a denoiser output, sigma schedule, model patch, or stochastic noise field. Consequently, it can coexist with Spectrum's `SAMPLER_SAMPLE`/ `PREDICT_NOISE` hooks and Sol-Krea2's distinct `OUTER_SAMPLE` sampling scope.
+
+A callable registered exactly once under `outer_sample.kj_preview_override` is treated as an **outer-sampling observer**, not as a numerical modifier. No KJNodes class name, module source path, version, whole-file hash or callback AST is used in production admission. This boundary is intentional: Spectrum's SAMPLER_SAMPLE wrapper runs *inside* outer-sampling wrappers and therefore validates the **effective** ComfyUI KSAMPLER and source-audited native solver, selected options and sigma coordinates. Its inner denoiser wrapper separately validates model/weight identity, supported patches and conditioning, and each outer step's denoiser opportunity and callback sequence. A preview wrapper's implementation is irrelevant to those numerical contracts unless it changes the actual sampler/model behavior, which remains subject to the same checks and native fallback. Admission snapshots the specific registered KJ instance, its callable and its code-object identity for the active invocation, rejecting replacements or mutation while sampling. Unregistered transformer/diffusion wrappers and unknown outer-sample keys remain blocked. Future KJNodes implementations using the same registration enter the same effective-contract checks without source requalification. Historical upstream KJ source revisions are pinned **only for reproducible integration tests**, not for runtime compatibility. Structural tests cannot guarantee that every future external wrapper behavior is numerically benign; native solver validation and active runtime checks define the supported boundary.
+
+
+### Native SA-Solver and PECE evaluation accounting
+
+ComfyUI's SA-Solver uses stochastic Adams coefficient helpers and native
+half-log-SNR scheduling, with an initial flow-sigma correction shared with
+ER-SDE. Spectrum verifies the original native predictor, PECE entrypoint,
+coefficient family and tau-window helper before forecasting, and accepts
+validated sampler orders, stochastic noise and sampling window options.
+
+Standard \`sa_solver\` evaluates the model once per outer step. PECE mode
+(\`sa_solver_pece\` or the native \`sa_solver\` with \`use_pece=True\`) first
+evaluates its predictor and **fires the outer-step callback**, then evaluates
+the corrected state at the same sigma on eligible steps. Treating that second
+call as a new outer step would corrupt forecast coordinates and PECE history.
+The Spectrum sampler wrapper tracks a pending correction after the callback
+and requires its sigma to match the prior step. It routes the correction
+through the native model without any forecast, anchors or cached history
+substitution. The next predictor resumes using the next sigma and existing
+causal predictor history. Unexpected correction ordering disables forecasting.
+The report records the additional PECE correction opportunity separately
+from outer-step callbacks; native correction evaluations are still included
+in the actual model-evaluation count.
+
+Scale-Locked PR #16 records planner predictor and corrected-state anchors
+independently. Fully locked target predictor and correction steps receive
+their corresponding planner values; the original native predictor/corrector
+updates still execute. The SA stochastic sampler generates patch-coupled
+Gaussian increments indexed by actual sigma transitions, since only the
+selected SDE window invokes the noise sampler. Restarted resolution stages
+reset Adams history as required by the native solver. CPU execution tests
+cover predictor/corrector ordering, source mismatch fail-closed behavior,
+stochastic-noise repeatability, callback counts and locked-step output parity.
+These checks do not establish image fidelity or CUDA acceleration.
