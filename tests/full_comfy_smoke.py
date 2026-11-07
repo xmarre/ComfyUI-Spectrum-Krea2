@@ -318,10 +318,9 @@ def main():
         try:
             original_preview_call.__code__ = substitute_call.__code__
             assert not matches(policy, admitted_options["transformer_options"])
-            rejected, reason = qualify(admitted_options)
-            assert rejected is None and reason == (
-                "unverified KJ PreviewOverride wrapper source or ownership"
-            )
+            requalified, reason = qualify(admitted_options)
+            assert reason is None and requalified.kj_preview_wrapper is preview
+            assert matches(requalified, admitted_options["transformer_options"])
         finally:
             original_preview_call.__code__ = original_code
 
