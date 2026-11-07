@@ -29,7 +29,8 @@ KJ_PREVIEW_BLOB_SHA = "d20d7ff75aac99dccfd322f95b9fd0a6ba0d0e42"
 
 @lru_cache(maxsize=16)
 def _audited_kj_preview_type(cls):
-    if cls.__name__ != "_PreviewOverrideWrapper":
+    if (cls.__name__ != "_PreviewOverrideWrapper" or
+            not callable(cls.__dict__.get("__call__"))):
         return False
     module = sys.modules.get(cls.__module__)
     if (module is None or getattr(module, "_PreviewOverrideWrapper", None) is not cls

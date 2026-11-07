@@ -214,10 +214,14 @@ def test_fallback_diagnostic_reports_only_names_and_owner(providers):
 
 def test_audited_kj_preview_is_allowed_only_at_outer_sample(providers, monkeypatch):
     from comfyui_spectrum_krea2 import qualified_patches as q
-    preview = object()
+    class FakePreview:
+        def __call__(self, *args):
+            pass
+
+    preview = FakePreview()
     # The real upstream source fingerprint is checked in the full-native
     # integration lane; isolate identity/placement checks in this fixture.
-    monkeypatch.setattr(q, "_audited_kj_preview_type", lambda cls: cls is object)
+    monkeypatch.setattr(q, "_audited_kj_preview_type", lambda cls: cls is FakePreview)
     opts = model_options(providers, sol=True, diff=False)
     wraps = opts["transformer_options"]["wrappers"]
     wraps.setdefault("outer_sample", {})["kj_preview_override"] = [preview]
