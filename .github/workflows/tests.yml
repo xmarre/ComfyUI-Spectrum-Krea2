@@ -68,11 +68,29 @@ jobs:
           repository: Comfy-Org/ComfyUI
           ref: 135abed8da169e33ab0b86550e05e3ae55d6df8c
           path: _sampler_legacy
+      - name: Check out Sol-Krea2 companion patch
+        uses: actions/checkout@v4
+        with:
+          repository: xmarre/ComfyUI-Sol-H3
+          ref: d59355dc7101b7f29e7bd7e6768badcd4f2d08c9
+          path: _sol_h3
+      - name: Check out Krea 2 Diff-Aid companion patch
+        uses: actions/checkout@v4
+        with:
+          repository: xmarre/ComfyUI-DiffAid-Patches
+          ref: 99a0ca7670298244e13b084713b329a177cd6ab4
+          path: _diffaid
+      - name: Check out audited KJNodes preview wrapper
+        uses: actions/checkout@v4
+        with:
+          repository: kijai/ComfyUI-KJNodes
+          ref: ab72eda7ffad6280422d71ab7d54d3fb87c0ba18
+          path: _kj
       - name: Install full native CPU integration dependencies
         run: |
           python -m pip install torch==2.15.0 torchvision==0.29.2 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e '.[test]' torchsde==0.2.6 scipy safetensors Pillow tqdm psutil pyyaml sentencepiece transformers==5.22.1 requests comfy-kitchen==0.2.40 comfy-aimdo==0.6.0
       - name: Exercise full native ModelPatcher and CFG sampling
         run: |
-          python tests/full_comfy_smoke.py --comfy-root _comfy
-          python tests/full_comfy_smoke.py --comfy-root _comfy --sampler-source-root _sampler_legacy
+          python tests/full_comfy_smoke.py --comfy-root _comfy --sol-root _sol_h3 --diffaid-root _diffaid --kj-root _kj
+          python tests/full_comfy_smoke.py --comfy-root _comfy --sampler-source-root _sampler_legacy --sol-root _sol_h3 --diffaid-root _diffaid --kj-root _kj
