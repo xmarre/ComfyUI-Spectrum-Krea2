@@ -119,7 +119,8 @@ has an optional `sa_spectrum_forecasts` switch, off by default pending
 full-checkpoint image-quality validation. When disabled, an invocation-local
 context flag makes Spectrum evaluate **every** SA predictor and PECE correction
 with the genuine native denoiser, while leaving model/solver patches and
-stochastic noise unchanged. The report explicitly shows `native_only=true`
+stochastic noise unchanged. Native-only does not install Spectrum
+feature-capture hooks or retain multi-gigabyte predictor history. The report explicitly shows `native_only=true`
 and `forecast=0`. The flag is restored after sampling, including exceptions,
 and cannot affect other runs. Enabled mode preserves the qualified predictor
 forecast path. A native-only result that is still defective implicates the

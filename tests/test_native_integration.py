@@ -750,6 +750,7 @@ def test_sa_native_only_scope_preserves_exact_solver_and_does_not_leak(native,na
                                         extrapolation_guard_enabled=False),
                             steps=12,sampler_name=name,sampler_options=options)
         assert report['native_only'] is True and report['forecast']==0
+        assert report['peak_history_bytes'] == 0
         assert report['fallback'] is None
         torch.testing.assert_close(selected,baseline,rtol=0,atol=0)
         # An unrelated nested one-call solver in the same execution context

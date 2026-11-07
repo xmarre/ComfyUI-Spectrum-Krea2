@@ -86,6 +86,11 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         return result
     if session is None or session.binding is not binding:
         return native()
+    if session.native_only:
+        # Native-only is an exact denoiser bypass, not merely a "no forecast"
+        # decision: avoid installing the final-layer capture hook and retaining
+        # potentially gigabytes of unused predictor history.
+        return native()
     inner = executor.class_obj
     if session.disabled_reason or session.active_step is None:
         return native()
