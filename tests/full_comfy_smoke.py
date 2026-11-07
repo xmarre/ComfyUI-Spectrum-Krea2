@@ -276,21 +276,30 @@ def main():
         # must invalidate both the stored invocation and the next run.
         from comfy.patcher_extension import WrappersMP
         from comfyui_spectrum_krea2.qualified_patches import qualify, matches
-        policy, reason = qualify(selected.model_options)
-        assert reason is None and policy.kj_preview_wrapper is not None
-        preview_cls = type(policy.kj_preview_wrapper)
+        preview = selected.get_wrappers(WrappersMP.OUTER_SAMPLE, "kj_preview_override")[-1]
+        # ModelPatcher stores wrappers separately; the runtime materializes
+        # transformer_options.wrappers for its sampler. Build that exact shape
+        # from the registered instance rather than inspecting dormant options.
+        admitted_options = {
+            "transformer_options": {
+                "wrappers": {"outer_sample": {"kj_preview_override": [preview]}},
+            },
+        }
+        policy, reason = qualify(admitted_options)
+        assert reason is None and policy.kj_preview_wrapper is preview
+        preview_cls = type(preview)
         original_preview_call = preview_cls.__call__
         try:
             preview_cls.__call__ = lambda self, executor, *a, **kw: executor(*a, **kw)
-            assert not matches(policy, selected.model_options["transformer_options"])
-            rejected, reason = qualify(selected.model_options)
+            assert not matches(policy, admitted_options["transformer_options"])
+            rejected, reason = qualify(admitted_options)
             assert rejected is None and reason == (
                 "unverified KJ PreviewOverride wrapper source or ownership"
             )
         finally:
             preview_cls.__call__ = original_preview_call
-        recovered, reason = qualify(selected.model_options)
-        assert reason is None and recovered.kj_preview_wrapper is policy.kj_preview_wrapper
+        recovered, reason = qualify(admitted_options)
+        assert reason is None and recovered.kj_preview_wrapper is preview
 
     if args.sol_root and args.diffaid_root:
         # Real ComfyUI ModelPatcher, real Diff-Aid types, and the actual Sol
