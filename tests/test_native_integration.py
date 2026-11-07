@@ -752,6 +752,12 @@ def test_sa_native_only_scope_preserves_exact_solver_and_does_not_leak(native,na
         assert report['native_only'] is True and report['forecast']==0
         assert report['fallback'] is None
         torch.testing.assert_close(selected,baseline,rtol=0,atol=0)
+        # An unrelated nested one-call solver in the same execution context
+        # must not inherit the SA-only suppression.
+        _,other=run(model,Config(preset='turbo',warmup=2,tail=1,
+                                 extrapolation_guard_enabled=False),
+                    steps=12,sampler_name='sample_euler')
+        assert other['native_only'] is False and other['forecast'] > 0
     finally:
         FORCE_NATIVE.reset(token)
     assert FORCE_NATIVE.get() is False

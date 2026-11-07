@@ -201,11 +201,13 @@ class Binding:
                           getattr(model_wrap.inner_model, "current_weight_patches_uuid", None),
                           noise.shape[0], tuple(noise.shape[-2:]))
         session.weight_owner = model_wrap.inner_model
-        session.native_only = bool(FORCE_NATIVE.get())
         sa_options = executor.class_obj.extra_options
         is_sa = executor.class_obj.sampler_function.__name__ in (
             "sample_sa_solver", "sample_sa_solver_pece"
         )
+        # An unrelated nested Euler/ER-SDE sampler in the same context must
+        # retain its own forecast policy; only SA scopes opt into native-only.
+        session.native_only = is_sa and bool(FORCE_NATIVE.get())
         session.pece_enabled = (is_sa and
             (executor.class_obj.sampler_function.__name__ == "sample_sa_solver_pece" or
              sa_options.get("use_pece", False)))
