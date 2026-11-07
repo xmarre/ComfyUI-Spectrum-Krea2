@@ -6,6 +6,10 @@ Only the reviewed Sol-Krea2 and Krea2 Diff-Aid implementations are eligible.
 Unknown patches, wrapper owners and model-function decorators fail closed.
 """
 from dataclasses import dataclass
+from functools import lru_cache
+import hashlib
+import inspect
+from pathlib import Path
 import sys
 
 import torch
@@ -14,6 +18,35 @@ CONTRACT_REVISION = "qualified-krea2-v2"
 SOL_KEY = "sol_krea2_sparse_attention_v1"
 SPECTRUM_KEY = "spectrum_krea2"
 DIFFAID_WRAPPER = "diffaid_krea2_text_residual"
+KJ_PREVIEW_KEY = "kj_preview_override"
+# Audited KJNodes preview_override_node.py, upstream revision
+# ab72eda7ffad6280422d71ab7d54d3fb87c0ba18. The wrapper delegates to
+# OUTER_SAMPLE once, substitutes only the progress callback and restores its
+# temporary previewer overrides in finally. Reject changed versions until
+# the new source and callback behavior have been reviewed.
+KJ_PREVIEW_BLOB_SHA = "d20d7ff75aac99dccfd322f95b9fd0a6ba0d0e42"
+
+
+@lru_cache(maxsize=16)
+def _audited_kj_preview_type(cls):
+    if cls.__name__ != "_PreviewOverrideWrapper":
+        return False
+    module = sys.modules.get(cls.__module__)
+    if (module is None or getattr(module, "_PreviewOverrideWrapper", None) is not cls
+            or not (cls.__module__ == "preview_override_node" or
+                    cls.__module__.endswith(".preview_override_node"))):
+        return False
+    try:
+        filename = inspect.getsourcefile(cls.__call__)
+        if filename is None or Path(filename).name != "preview_override_node.py":
+            return False
+        source = Path(filename).read_bytes()
+        digest = hashlib.sha1(b"blob " + str(len(source)).encode("ascii") +
+                              b"\x00" + source).hexdigest()
+    except (OSError, TypeError, ValueError):
+        return False
+    return digest == KJ_PREVIEW_BLOB_SHA
+
 
 
 def _registered_type(value, name):
@@ -44,6 +77,8 @@ class QualifiedPatches:
     sol_override: object = None
     diffaid_patch: object = None
     diffaid_wrapper: object = None
+    kj_preview_wrapper: object = None
+    kj_preview_method: object = None
     verified_wrappers: tuple = ()
 
     def sol_status(self):
@@ -199,7 +234,22 @@ def qualify(model_options):
                 any(type(k) is not int or not 0 <= k < 28 for k in blocks)):
             return None, "dynamic or invalid Krea 2 Diff-Aid patch configuration"
 
+    # A preview-only OUTER_SAMPLE wrapper may wrap the callback without
+    # altering the denoiser, solver state or conditioning. Admit only the
+    # exact upstream implementation audited above. Its source and instance
+    # must both be verified; no key-only allowlist is sufficient.
+    kj_preview = None
+    kj_entries = [(kind, values) for kind, key, values in entries if key == KJ_PREVIEW_KEY]
+    if kj_entries:
+        if (len(kj_entries) != 1 or kj_entries[0][0] != "outer_sample" or
+                len(kj_entries[0][1]) != 1 or
+                not _audited_kj_preview_type(type(kj_entries[0][1][0]))):
+            return None, "unverified KJ PreviewOverride wrapper source or ownership"
+        kj_preview = kj_entries[0][1][0]
+
     allowed = {(kind, key) for kind, key, _ in entries if key == SPECTRUM_KEY}
+    if kj_preview is not None:
+        allowed.add(("outer_sample", KJ_PREVIEW_KEY))
     if sol_override is not None:
         allowed.update({("outer_sample", SOL_KEY), ("diffusion_model", SOL_KEY)})
     if diffaid_wrapper is not None:
@@ -218,7 +268,10 @@ def qualify(model_options):
                 return None, "unverified Sol-Krea2 wrapper ownership"
 
     frozen = tuple((kind, key, tuple(values)) for kind, key, values in entries if key != SPECTRUM_KEY)
-    return QualifiedPatches(sol_override, diffaid_patch, diffaid_wrapper, frozen), None
+    return QualifiedPatches(
+        sol_override, diffaid_patch, diffaid_wrapper, kj_preview,
+        type(kj_preview).__call__ if kj_preview is not None else None, frozen,
+    ), None
 
 
 def matches(policy, trans):
@@ -246,6 +299,9 @@ def matches(policy, trans):
         return False
     if policy.sol_override is not None and trans.get("optimized_attention_override") is not policy.sol_override:
         return False
+    if (policy.kj_preview_wrapper is not None and
+            type(policy.kj_preview_wrapper).__call__ is not policy.kj_preview_method):
+        return False
     try:
         wrapper_items = list(_entries(_wrappers(trans) or {}))
     except ValueError:
@@ -260,10 +316,16 @@ def matches(policy, trans):
     allowed = {(kind, key) for kind, key, _ in wrapper_items if key == SPECTRUM_KEY}
     if policy.sol_override is not None:
         allowed.update({("outer_sample", SOL_KEY), ("diffusion_model", SOL_KEY)})
+    if policy.kj_preview_wrapper is not None:
+        allowed.add(("outer_sample", KJ_PREVIEW_KEY))
     if policy.diffaid_wrapper is not None:
         allowed.add(("diffusion_model", DIFFAID_WRAPPER))
     for kind, key, wrappers in wrapper_items:
         if (kind, key) not in allowed:
+            return False
+        if key == KJ_PREVIEW_KEY and (
+                kind != "outer_sample" or len(wrappers) != 1 or
+                wrappers[0] is not policy.kj_preview_wrapper):
             return False
         if key == DIFFAID_WRAPPER and (
                 len(wrappers) != 1 or wrappers[0] is not policy.diffaid_wrapper):

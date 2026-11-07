@@ -17,6 +17,7 @@ def main():
     p.add_argument('--sampler-source-root',type=pathlib.Path)
     p.add_argument('--sol-root',type=pathlib.Path)
     p.add_argument('--diffaid-root',type=pathlib.Path)
+    p.add_argument('--kj-root',type=pathlib.Path)
     args=p.parse_args()
     sys.path[:0]=[str(args.comfy_root.resolve()),str(pathlib.Path(__file__).resolve().parents[1])]
     sys.argv=[sys.argv[0],'--cpu','--use-pytorch-cross-attention','--disable-all-custom-nodes']
@@ -167,6 +168,110 @@ def main():
             records.append({'container_wrapper':variant,**reports[0]})
         finally:
             comfy.samplers.KSAMPLER.sample=original_sample
+
+    def make_kj_preview():
+        """Load the actual audited upstream KJ wrapper class with preview I/O
+        suppressed by fixture helpers; do not reimplement its __call__."""
+        # Keep one registered Python class across cloned patchers. Replacing
+        # the module would invalidate earlier instances' owner identity.
+        existing = sys.modules.get("kj_preview_fixture.preview_override_node")
+        if existing is not None:
+            return existing._PreviewOverrideWrapper(
+                512, None, 80, False, preview_frames=1, tiny_vae="none",
+            )
+        import ast
+        import hashlib
+        import logging
+        import time
+        import types
+        from comfyui_spectrum_krea2.qualified_patches import (
+            KJ_PREVIEW_BLOB_SHA, _audited_kj_preview_type,
+        )
+        path = args.kj_root.resolve() / "nodes/preview_override_node.py"
+        raw = path.read_bytes()
+        sha = hashlib.sha1(
+            b"blob " + str(len(raw)).encode("ascii") + b"\x00" + raw
+        ).hexdigest()
+        assert sha == KJ_PREVIEW_BLOB_SHA, (sha, KJ_PREVIEW_BLOB_SHA)
+        tree = ast.parse(raw, filename=str(path))
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "_PreviewOverrideWrapper")
+
+        class NoPreviewEncoder:
+            def submit(self, fn):
+                return True
+            def shutdown(self, drain_timeout=5.0):
+                pass
+
+        package_name = "kj_preview_fixture"
+        module_name = package_name + ".preview_override_node"
+        sys.modules.setdefault(package_name, types.ModuleType(package_name))
+        module = types.ModuleType(module_name)
+        module.__file__ = str(path)
+        module.__dict__.update({
+            "torch": torch, "comfy": __import__("comfy"), "time": time,
+            "logging": logging, "PromptServer": None,
+            "load_tiny_vae_decoder": None,
+            "_get_core_previewer": lambda *a: None,
+            "_is_ltx_latent_format": lambda *a: False,
+            "_is_av_model": lambda *a: False,
+            "_normalize_packed_x0": lambda x, *a: x,
+            "_frames_per_token": lambda *a: (1, 1),
+            "_AsyncPreviewEncoder": NoPreviewEncoder,
+            "latent_preview": types.SimpleNamespace(
+                Latent2RGBPreviewer=lambda *a, **kw: None,
+            ),
+        })
+        sys.modules[module_name] = module
+        exec(compile(ast.Module(body=[cls], type_ignores=[]), str(path), "exec"),
+             module.__dict__)
+        klass = module._PreviewOverrideWrapper
+        assert _audited_kj_preview_type(klass)
+        return klass(512, None, 80, False, preview_frames=1, tiny_vae="none")
+
+    def with_kj(model_patcher):
+        from comfy.patcher_extension import WrappersMP
+        copied = model_patcher.clone()
+        copied.add_wrapper_with_key(
+            WrappersMP.OUTER_SAMPLE, "kj_preview_override", make_kj_preview(),
+        )
+        return copied
+
+    if args.kj_root:
+        # Real native ComfyUI, original source-audited KJ OUTER_SAMPLE __call__,
+        # and Spectrum SAMPLER_SAMPLE/PREDICT_NOISE wrappers in either model
+        # patching order. No preview backends or network emissions are invoked.
+        chosen_options = dict(preset="turbo", warmup=2, tail=1,
+                              bootstrap=False, extrapolation_guard_enabled=False)
+        noise_kj = torch.randn(1, 16, 1, 5, 7)
+        context_kj = torch.randn(1, 3, 32)
+        pos_kj = [[context_kj, {}]]
+        neg_kj = [[context_kj*.2, {}]]
+        native, _ = sample(model, noise_kj, pos_kj, neg_kj, 1., "er_sde", steps=14)
+        native_preview, _ = sample(
+            with_kj(model), noise_kj, pos_kj, neg_kj, 1., "er_sde", steps=14,
+        )
+        torch.testing.assert_close(native_preview, native, atol=0, rtol=0)
+        baseline = node.apply(model, **chosen_options)[0]
+        baseline_output, baseline_reports = sample(
+            baseline, noise_kj, pos_kj, neg_kj, 1., "er_sde", steps=14,
+        )
+        assert baseline_reports[0]["fallback"] is None, baseline_reports
+        assert baseline_reports[0]["forecast"] > 0
+        for order, selected in (
+            ("preview_before_spectrum", node.apply(with_kj(model), **chosen_options)[0]),
+            ("preview_after_spectrum", with_kj(baseline)),
+        ):
+            output, reports = sample(
+                selected, noise_kj, pos_kj, neg_kj, 1., "er_sde", steps=14,
+            )
+            report = reports[0]
+            assert report["fallback"] is None and report["forecast"] > 0, report
+            assert report["outer_steps"] == 14
+            assert report["actual"] + report["forecast"] == 14
+            torch.testing.assert_close(output, baseline_output, atol=0, rtol=0)
+            records.append({"kj_preview": order, **report})
+
     if args.sol_root and args.diffaid_root:
         # Real ComfyUI ModelPatcher, real Diff-Aid types, and the actual Sol
         # wrapper stack. Only the CUDA sparse arithmetic is replaced by its
@@ -388,6 +493,28 @@ def main():
             records.append({
                 'spectrum_only_reference': True, 'steps': steps, **baseline,
             })
+
+        if args.kj_root:
+            # KJ + Sol + actual Krea Diff-Aid text residual + Spectrum + ER-SDE.
+            # CPU executes dense fallback for the actual Sol kernel, but the
+            # real Sol sampling/diffusion wrappers and callback order execute.
+            with_sol = sol.install(
+                modded, sol.Settings(dense_evaluations=0, dense_layers=0, min_tokens=0),
+            )
+            selected = node.apply(
+                with_kj(with_sol), preset="turbo", warmup=2, tail=1,
+                bootstrap=False, extrapolation_guard_enabled=False,
+            )[0]
+            output, reports = sample(
+                selected, noise12, positive12, negative12, 1., "er_sde", steps=14,
+            )
+            report = reports[0]
+            assert report["fallback"] is None, report
+            assert report["forecast"] > 0, report
+            assert report["actual"] + report["forecast"] == 14, report
+            assert CURRENT.get() is None and CAPTURE.get() is None
+            records.append({"kj_sol_diffaid_er_sde": True, **report})
+
     print(json.dumps({'full_native_cases':len(records),'records':records},sort_keys=True))
 
 

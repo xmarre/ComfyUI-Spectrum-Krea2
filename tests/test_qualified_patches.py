@@ -210,3 +210,36 @@ def test_fallback_diagnostic_reports_only_names_and_owner(providers):
     assert "sol_marker=True" in detail
     assert "SharedTimestepWrapper" in detail
     assert CONTRACT_REVISION == "qualified-krea2-v2"
+
+
+def test_audited_kj_preview_is_allowed_only_at_outer_sample(providers, monkeypatch):
+    from comfyui_spectrum_krea2 import qualified_patches as q
+    preview = object()
+    # The real upstream source fingerprint is checked in the full-native
+    # integration lane; isolate identity/placement checks in this fixture.
+    monkeypatch.setattr(q, "_audited_kj_preview_type", lambda cls: cls is object)
+    opts = model_options(providers, sol=True, diff=False)
+    wraps = opts["transformer_options"]["wrappers"]
+    wraps.setdefault("outer_sample", {})["kj_preview_override"] = [preview]
+    policy, reason = qualify(opts)
+    assert reason is None and policy.kj_preview_wrapper is preview
+    assert matches(policy, opts["transformer_options"])
+
+    wraps["outer_sample"]["kj_preview_override"] = [object()]
+    assert not matches(policy, opts["transformer_options"])
+    wraps["outer_sample"]["kj_preview_override"] = [preview, object()]
+    assert qualify(opts)[1] == "unverified KJ PreviewOverride wrapper source or ownership"
+    wraps["outer_sample"].pop("kj_preview_override")
+    wraps["diffusion_model"]["kj_preview_override"] = [preview]
+    assert qualify(opts)[1] == "unverified KJ PreviewOverride wrapper source or ownership"
+
+
+def test_kj_preview_unverified_or_malformed_still_falls_back(providers):
+    opts = model_options(providers, sol=True, diff=False)
+    wraps = opts["transformer_options"]["wrappers"]
+    wraps.setdefault("outer_sample", {})["kj_preview_override"] = [object()]
+    policy, reason = qualify(opts)
+    assert policy is None and reason == "unverified KJ PreviewOverride wrapper source or ownership"
+    wraps["outer_sample"]["kj_preview_override"] = []
+    policy, reason = qualify(opts)
+    assert policy is None and reason == "unverified KJ PreviewOverride wrapper source or ownership"
