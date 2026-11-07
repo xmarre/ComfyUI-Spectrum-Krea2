@@ -10,6 +10,9 @@ from .forecast import History, ForecastUnavailable
 LOG = logging.getLogger(__name__)
 CURRENT = contextvars.ContextVar("spectrum_krea2_session", default=None)
 REPORTS = contextvars.ContextVar("spectrum_krea2_reports", default=None)
+# Invocation-scoped quality-control override for upstream composition samplers.
+# The native solver/model path remains unchanged and other jobs are unaffected.
+FORCE_NATIVE = contextvars.ContextVar("spectrum_krea2_force_native", default=False)
 
 
 @dataclass
@@ -40,6 +43,7 @@ class Session:
     peak_history_bytes: int = 0
     weight_owner: object = None
     patch_policy: object = None
+    native_only: bool = False
     pece_enabled: bool = False
     pece_corrector_order: int = 0
     pece_pending_step: int | None = None
@@ -71,6 +75,8 @@ class Session:
     def forecast_mode(self, stream):
         """None for an actual call, else "bootstrap" or "regression"."""
         step = self.active_step
+        if self.native_only:
+            return None
         if step is None or stream.last_step >= step:
             return None
         if step >= len(self.coordinates) - self.config.tail:
@@ -119,4 +125,5 @@ class Session:
                                      "bootstrap": self.config.bootstrap_active,
                                      "extrapolation_guard_enabled": self.config.extrapolation_guard_enabled,
                                      "max_extrapolation_span_ratio": self.config.max_extrapolation_span_ratio},
-                "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons)}
+                "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons),
+                "native_only": self.native_only}

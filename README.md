@@ -114,4 +114,17 @@ When supported, the preview callback remains active through both Krea 2 Scale-Lo
 
 ### Scale-Locked Krea 2 sampler compatibility
 
+**SA-Solver native-only diagnostic.** The paired Krea 2 Scale-Locked node
+has an optional `sa_spectrum_forecasts` switch, off by default pending
+full-checkpoint image-quality validation. When disabled, an invocation-local
+context flag makes Spectrum evaluate **every** SA predictor and PECE correction
+with the genuine native denoiser, while leaving model/solver patches and
+stochastic noise unchanged. The report explicitly shows `native_only=true`
+and `forecast=0`. The flag is restored after sampling, including exceptions,
+and cannot affect other runs. Enabled mode preserves the qualified predictor
+forecast path. A native-only result that is still defective implicates the
+sampler or Scale-Locked stage/refinement rather than Spectrum extrapolation;
+this switch is a controlled diagnostic and is not a general SA image-quality
+guarantee.
+
 Scale-Locked Regenerate skips fully composition-locked high-resolution denoiser calls for its ten offered native solvers. The **separate Spectrum acceleration layer** supports Euler, DPM++ 2M, RES Multistep, Gradient Estimation, DEIS, iPNDM, iPNDM-V, **ER-SDE**, **SA-Solver**, and **SA-Solver PECE** when native source contracts match. A forecast replaces one denoised prediction; every solver retains its original numerical update and history. ER-SDE continues to inject native stochastic noise (or runs in its explicitly selected ODE mode). The native first-sigma flow correction is also applied to Spectrum history coordinates. ER-SDE accepts validated `max_stage`, `s_noise`, `noise_scaler` and `noise_sampler` options; unrecognized overrides and modified solver or sigma conversion source require native fallback. Scale-Locked's ER-SDE noise sampler couples per-step Gaussian increments across planner and target resolutions. All structural/CPU results are separate from real Krea 2 checkpoint quality and CUDA throughput, which require matched-seed evaluation.

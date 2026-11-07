@@ -732,6 +732,38 @@ def test_sa_solver_rejects_unreviewed_options(native,options):
     assert reason in ('invalid SA-Solver options','unverified SA-Solver options')
 
 
+
+
+@pytest.mark.parametrize('name',['sample_sa_solver','sample_sa_solver_pece'])
+def test_sa_native_only_scope_preserves_exact_solver_and_does_not_leak(native,name):
+    from comfyui_spectrum_krea2.runtime import FORCE_NATIVE
+    model=tiny_model(native[0])
+    options={'tau_func':lambda sigma:0.,'s_noise':0.}
+    torch.manual_seed(712)
+    baseline,baseline_report=run(model,Config(window=0),steps=12,
+                                 sampler_name=name,sampler_options=options)
+    assert baseline_report['forecast']==0 and baseline_report['native_only'] is False
+    token=FORCE_NATIVE.set(True)
+    try:
+        torch.manual_seed(712)
+        selected,report=run(model,Config(preset='turbo',warmup=2,tail=1,
+                                        extrapolation_guard_enabled=False),
+                            steps=12,sampler_name=name,sampler_options=options)
+        assert report['native_only'] is True and report['forecast']==0
+        assert report['fallback'] is None
+        torch.testing.assert_close(selected,baseline,rtol=0,atol=0)
+    finally:
+        FORCE_NATIVE.reset(token)
+    assert FORCE_NATIVE.get() is False
+    torch.manual_seed(712)
+    _,enabled=run(model,Config(preset='turbo',warmup=2,tail=1,
+                               extrapolation_guard_enabled=False),
+                  steps=12,sampler_name=name,sampler_options=options)
+    assert enabled['native_only'] is False
+    assert enabled['forecast']>0
+    assert CURRENT.get() is None and not model.last._forward_pre_hooks
+
+
 def test_sa_solver_modified_helper_forces_native_fallback(native,monkeypatch):
     from comfy.samplers import KSAMPLER
     from comfy.k_diffusion import sampling,sa_solver

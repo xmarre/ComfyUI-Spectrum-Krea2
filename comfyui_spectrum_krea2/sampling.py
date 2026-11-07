@@ -6,7 +6,7 @@ import logging
 import math
 import torch
 from .compat import verified, model_contract
-from .runtime import CURRENT, REPORTS, Session
+from .runtime import CURRENT, REPORTS, FORCE_NATIVE, Session
 
 KEY = "spectrum_krea2"
 LOG = logging.getLogger(__name__)
@@ -201,6 +201,7 @@ class Binding:
                           getattr(model_wrap.inner_model, "current_weight_patches_uuid", None),
                           noise.shape[0], tuple(noise.shape[-2:]))
         session.weight_owner = model_wrap.inner_model
+        session.native_only = bool(FORCE_NATIVE.get())
         sa_options = executor.class_obj.extra_options
         is_sa = executor.class_obj.sampler_function.__name__ in (
             "sample_sa_solver", "sample_sa_solver_pece"
