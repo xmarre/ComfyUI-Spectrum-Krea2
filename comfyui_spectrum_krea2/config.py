@@ -4,6 +4,12 @@ from dataclasses import dataclass, replace
 import math
 
 
+# Active SA-Solver PECE acceleration: number of leading outer steps whose
+# predicted phase always runs the model. "off" keeps Spectrum's normal cadence.
+SA_PECE_POLICIES = {"off": None, "stable_start": 3, "balanced": 2, "max_speed": 1,
+                    "balanced_detail": 2}
+
+
 @dataclass(frozen=True)
 class Config:
     enabled: bool = True
@@ -19,6 +25,9 @@ class Config:
     budget_mb: int = 4096
     debug: bool = False
     bootstrap: bool = True
+    extrapolation_guard_enabled: bool = True
+    max_extrapolation_span_ratio: float = 0.5
+    sa_pece_forecast_policy: str = "off"
 
     def __post_init__(self):
         if self.preset not in {"raw", "turbo"}:
@@ -37,6 +46,14 @@ class Config:
             raise ValueError("Invalid history storage or memory budget")
         if not isinstance(self.bootstrap, bool):
             raise ValueError("bootstrap must be a boolean")
+        if type(self.extrapolation_guard_enabled) is not bool:
+            raise ValueError("extrapolation_guard_enabled must be a boolean")
+        ratio = self.max_extrapolation_span_ratio
+        if (type(ratio) not in (int, float) or not math.isfinite(ratio)
+                or not 0.05 <= ratio <= 8.0):
+            raise ValueError("max_extrapolation_span_ratio must be finite and in [0.05, 8.0]")
+        if self.sa_pece_forecast_policy not in SA_PECE_POLICIES:
+            raise ValueError("sa_pece_forecast_policy must be one of: " + ", ".join(SA_PECE_POLICIES))
 
     @property
     def bootstrap_active(self):
