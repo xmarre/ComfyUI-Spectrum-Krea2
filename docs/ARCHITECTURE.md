@@ -76,3 +76,37 @@ The native solver corrects an initial flow sigma of 1.0 to a finite-log-SNR coor
 KJNodes' `_PreviewOverrideWrapper` is an `OUTER_SAMPLE` wrapper that decorates the progress callback. The audited source calls the underlying sampler once, forwards the original callback once per outer step, and restores temporary previewer method replacements in `finally`. It does not substitute a denoiser output, sigma schedule, model patch, or stochastic noise field. Consequently, it can coexist with Spectrum's `SAMPLER_SAMPLE`/ `PREDICT_NOISE` hooks and Sol-Krea2's distinct `OUTER_SAMPLE` sampling scope.
 
 A callable registered exactly once under `outer_sample.kj_preview_override` is treated as an **outer-sampling observer**, not as a numerical modifier. No KJNodes class name, module source path, version, whole-file hash or callback AST is used in production admission. This boundary is intentional: Spectrum's SAMPLER_SAMPLE wrapper runs *inside* outer-sampling wrappers and therefore validates the **effective** ComfyUI KSAMPLER and source-audited native solver, selected options and sigma coordinates. Its inner denoiser wrapper separately validates model/weight identity, supported patches and conditioning, and each outer step's denoiser opportunity and callback sequence. A preview wrapper's implementation is irrelevant to those numerical contracts unless it changes the actual sampler/model behavior, which remains subject to the same checks and native fallback. Admission snapshots the specific registered KJ instance, its callable and its code-object identity for the active invocation, rejecting replacements or mutation while sampling. Unregistered transformer/diffusion wrappers and unknown outer-sample keys remain blocked. Future KJNodes implementations using the same registration enter the same effective-contract checks without source requalification. Historical upstream KJ source revisions are pinned **only for reproducible integration tests**, not for runtime compatibility. Structural tests cannot guarantee that every future external wrapper behavior is numerically benign; native solver validation and active runtime checks define the supported boundary.
+
+
+### Native SA-Solver and PECE evaluation accounting
+
+ComfyUI's SA-Solver uses stochastic Adams coefficient helpers and native
+half-log-SNR scheduling, with an initial flow-sigma correction shared with
+ER-SDE. Spectrum verifies the original native predictor, PECE entrypoint,
+coefficient family and tau-window helper before forecasting, and accepts
+validated sampler orders, stochastic noise and sampling window options.
+
+Standard \`sa_solver\` evaluates the model once per outer step. PECE mode
+(\`sa_solver_pece\` or the native \`sa_solver\` with \`use_pece=True\`) first
+evaluates its predictor and **fires the outer-step callback**, then evaluates
+the corrected state at the same sigma on eligible steps. Treating that second
+call as a new outer step would corrupt forecast coordinates and PECE history.
+The Spectrum sampler wrapper tracks a pending correction after the callback
+and requires its sigma to match the prior step. It routes the correction
+through the native model without any forecast, anchors or cached history
+substitution. The next predictor resumes using the next sigma and existing
+causal predictor history. Unexpected correction ordering disables forecasting.
+The report records the additional PECE correction opportunity separately
+from outer-step callbacks; native correction evaluations are still included
+in the actual model-evaluation count.
+
+Scale-Locked PR #16 records planner predictor and corrected-state anchors
+independently. Fully locked target predictor and correction steps receive
+their corresponding planner values; the original native predictor/corrector
+updates still execute. The SA stochastic sampler generates patch-coupled
+Gaussian increments indexed by actual sigma transitions, since only the
+selected SDE window invokes the noise sampler. Restarted resolution stages
+reset Adams history as required by the native solver. CPU execution tests
+cover predictor/corrector ordering, source mismatch fail-closed behavior,
+stochastic-noise repeatability, callback counts and locked-step output parity.
+These checks do not establish image fidelity or CUDA acceleration.
