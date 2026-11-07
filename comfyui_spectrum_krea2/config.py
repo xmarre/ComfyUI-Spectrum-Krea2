@@ -19,6 +19,8 @@ class Config:
     budget_mb: int = 4096
     debug: bool = False
     bootstrap: bool = True
+    extrapolation_guard_enabled: bool = True
+    max_extrapolation_span_ratio: float = 0.5
 
     def __post_init__(self):
         if self.preset not in {"raw", "turbo"}:
@@ -37,6 +39,12 @@ class Config:
             raise ValueError("Invalid history storage or memory budget")
         if not isinstance(self.bootstrap, bool):
             raise ValueError("bootstrap must be a boolean")
+        if type(self.extrapolation_guard_enabled) is not bool:
+            raise ValueError("extrapolation_guard_enabled must be a boolean")
+        ratio = self.max_extrapolation_span_ratio
+        if (type(ratio) not in (int, float) or not math.isfinite(ratio)
+                or not 0.05 <= ratio <= 8.0):
+            raise ValueError("max_extrapolation_span_ratio must be finite and in [0.05, 8.0]")
 
     @property
     def bootstrap_active(self):
