@@ -13,6 +13,7 @@ import pathlib
 import os
 import sys
 import types
+from typing import Callable, Union
 import torch
 from torch import nn
 from einops import rearrange
@@ -82,7 +83,7 @@ def load(root):
                         {'compute_stochastic_adams_b_coeffs',
                          'compute_simple_stochastic_adams_b_coeffs',
                          'compute_exponential_coeffs', 'get_tau_interval_func'},
-                        {'torch': torch, 'math': math})
+                        {'torch': torch, 'math': math, 'Callable': Callable, 'Union': Union})
     extract('comfy.k_diffusion.sampling', root/'comfy/k_diffusion/sampling.py',
             {'sample_euler','sample_dpmpp_2m','sample_res_multistep',
              'res_multistep','sample_gradient_estimation',
