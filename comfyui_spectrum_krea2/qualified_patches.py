@@ -6,7 +6,6 @@ Only the reviewed Sol-Krea2 and Krea2 Diff-Aid implementations are eligible.
 Unknown patches, wrapper owners and model-function decorators fail closed.
 """
 from dataclasses import dataclass
-from functools import lru_cache
 import hashlib
 import inspect
 from pathlib import Path
@@ -27,7 +26,6 @@ KJ_PREVIEW_KEY = "kj_preview_override"
 KJ_PREVIEW_BLOB_SHA = "d20d7ff75aac99dccfd322f95b9fd0a6ba0d0e42"
 
 
-@lru_cache(maxsize=16)
 def _audited_kj_preview_type(cls):
     if (cls.__name__ != "_PreviewOverrideWrapper" or
             not callable(cls.__dict__.get("__call__"))):

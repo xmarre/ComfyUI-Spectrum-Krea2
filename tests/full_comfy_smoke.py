@@ -272,6 +272,26 @@ def main():
             torch.testing.assert_close(output, baseline_output, atol=0, rtol=0)
             records.append({"kj_preview": order, **report})
 
+        # Replacing the class method after a previous successful admission
+        # must invalidate both the stored invocation and the next run.
+        from comfy.patcher_extension import WrappersMP
+        from comfyui_spectrum_krea2.qualified_patches import qualify, matches
+        policy, reason = qualify(selected.model_options)
+        assert reason is None and policy.kj_preview_wrapper is not None
+        preview_cls = type(policy.kj_preview_wrapper)
+        original_preview_call = preview_cls.__call__
+        try:
+            preview_cls.__call__ = lambda self, executor, *a, **kw: executor(*a, **kw)
+            assert not matches(policy, selected.model_options["transformer_options"])
+            rejected, reason = qualify(selected.model_options)
+            assert rejected is None and reason == (
+                "unverified KJ PreviewOverride wrapper source or ownership"
+            )
+        finally:
+            preview_cls.__call__ = original_preview_call
+        recovered, reason = qualify(selected.model_options)
+        assert reason is None and recovered.kj_preview_wrapper is policy.kj_preview_wrapper
+
     if args.sol_root and args.diffaid_root:
         # Real ComfyUI ModelPatcher, real Diff-Aid types, and the actual Sol
         # wrapper stack. Only the CUDA sparse arithmetic is replaced by its
