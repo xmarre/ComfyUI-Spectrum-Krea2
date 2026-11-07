@@ -29,8 +29,9 @@ import torch
 def causal_denoised(values, lambdas, steps, target_lambda):
     """Predict SA's denoised variable from actual anchors only.
 
-    Returns ``(value, mode)``. Consecutive anchors and any untrusted geometry
-    hold the latest anchor. Extrapolation never exceeds one anchor interval.
+    Returns ``(value, mode)`` with mode ``hold`` (one anchor or consecutive
+    anchors), ``guard_hold`` (untrusted geometry or more than one anchor
+    interval ahead) or ``extrapolation``. The guard reads one scalar.
     """
     if not values or not len(values) == len(lambdas) == len(steps):
         raise RuntimeError("stochastic SA dense output requires aligned actual anchors")
@@ -48,8 +49,9 @@ def causal_denoised(values, lambdas, steps, target_lambda):
     valid = (torch.isfinite(alpha) & torch.isfinite(denominator)
              & (denominator.abs() > 1e-12 * scale) & (denominator * advance >= 0.0)
              & (alpha >= -1e-6) & (alpha <= 1.0 + 1e-6))
-    weight = torch.where(valid, alpha.clamp(0.0, 1.0), torch.zeros_like(alpha))
-    weight = weight.to(device=latest.device, dtype=latest.dtype)
+    if not bool(valid):
+        return latest.clone(memory_format=torch.contiguous_format), "guard_hold"
+    weight = alpha.clamp(0.0, 1.0).to(device=latest.device, dtype=latest.dtype)
     return torch.lerp(latest, previous, -weight), "extrapolation"
 
 
@@ -93,8 +95,11 @@ def sample_sa_solver_isolated(session, model, x, sigmas, extra_args=None, callba
             session.counts["sa_ephemeral_forecast"] += 1
             if tau_t > 0 and s_noise > 0 and actual_preds:
                 # x_pred holds a fresh increment the forecast could not see.
-                denoised, _ = causal_denoised(actual_preds, actual_lambdas, actual_steps, lambdas[i])
+                denoised, mode = causal_denoised(actual_preds, actual_lambdas, actual_steps, lambdas[i])
                 session.counts["sa_dense_output"] += 1
+                session.counts["sa_dense_" + mode] += 1
+                session.sa_dense_steps.append({"step": i, "sigma": round(float(sigmas[i]), 6),
+                                               "mode": mode, "anchors": list(actual_steps[-2:])})
         if callback is not None:
             callback({"x": x_pred, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised})
         if not forecast:

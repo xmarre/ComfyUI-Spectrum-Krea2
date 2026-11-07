@@ -110,6 +110,10 @@ def test_stochastic_forecasts_cannot_reach_the_trajectory(native, use_pece):
     torch.testing.assert_close(first, second, atol=0, rtol=0)
     assert torch.isfinite(first).all()
     assert session.counts["sa_dense_output"] == len(forecasts)
+    modes = [entry["mode"] for entry in session.sa_dense_steps]
+    assert [entry["step"] for entry in session.sa_dense_steps] == list(forecasts)
+    assert sum(session.counts["sa_dense_" + m] for m in ("hold", "guard_hold", "extrapolation")) == len(forecasts)
+    assert set(modes) <= {"hold", "guard_hold", "extrapolation"}
     assert session.counts["sa_ephemeral_forecast"] == len(forecasts)
 
 
@@ -135,7 +139,7 @@ def test_causal_dense_output_is_bounded_and_causal():
     assert mode == "extrapolation"
     torch.testing.assert_close(value, torch.full((3,), 1.5))
     # Beyond one anchor interval the guard holds the latest anchor (H3 semantics).
-    overlong, _ = causal_denoised([a, b], [torch.tensor(0.), torch.tensor(1.)], [2, 4], torch.tensor(9.))
-    assert torch.equal(overlong, b)
-    backwards, _ = causal_denoised([a, b], [torch.tensor(0.), torch.tensor(1.)], [2, 4], torch.tensor(.5))
-    assert torch.equal(backwards, b)
+    overlong, mode = causal_denoised([a, b], [torch.tensor(0.), torch.tensor(1.)], [2, 4], torch.tensor(9.))
+    assert mode == "guard_hold" and torch.equal(overlong, b)
+    backwards, mode = causal_denoised([a, b], [torch.tensor(0.), torch.tensor(1.)], [2, 4], torch.tensor(.5))
+    assert mode == "guard_hold" and torch.equal(backwards, b)
