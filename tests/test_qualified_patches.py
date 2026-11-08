@@ -3,8 +3,10 @@ from types import ModuleType, SimpleNamespace
 import sys
 
 import pytest
+import torch
 
-from comfyui_spectrum_krea2.qualified_patches import qualify, matches
+import diffaid_reference
+from comfyui_spectrum_krea2.qualified_patches import qualify, matches, DiffAidGainUnavailable
 
 
 @pytest.fixture
@@ -59,6 +61,10 @@ def providers(monkeypatch):
             self.selected_blocks = (1, 8, 15)
             self.config = SimpleNamespace(sigma_start=0.0, sigma_end=1.0, sigma_ramp=0.0)
 
+    # Diff-Aid's own sigma-window helpers, as the installed module exposes them.
+    diff.STATE_KEY = diffaid_reference.STATE_KEY
+    diff._coerce_batch_value = diffaid_reference._coerce_batch_value
+    diff._sigma_window_gain = diffaid_reference._sigma_window_gain
     monkeypatch.setitem(sys.modules, diff.__name__, diff)
     override = lambda *args, **kwargs: None
     override._sol_krea2_owner = owner
@@ -73,6 +79,7 @@ def providers(monkeypatch):
         override=override, wrappers=sol_wrappers, marker=marker,
         counters=counters, Shared=SharedTimestepWrapper,
         Attention=Krea2AttentionPatch, Residual=Krea2TextResidualWrapper,
+        module=diff,
     )
 
 
@@ -122,7 +129,8 @@ def test_sol_phase_transitions_after_warmup_without_mutating_settings(providers)
 
 @pytest.mark.parametrize("change", ["extra_patch", "extra_wrapper", "wrong_patch",
                                      "wrong_wrapper", "bad_config", "bad_owner", "unknown_fn",
-                                     "partial_sigma"])
+                                     "nan_sigma", "reversed_sigma", "negative_ramp",
+                                     "sigma_above_one", "partial_sigma_without_gain_contract"])
 def test_unknown_owners_fail_closed(providers, change):
     opts = model_options(providers)
     trans = opts["transformer_options"]
@@ -140,11 +148,83 @@ def test_unknown_owners_fail_closed(providers, change):
         trans["optimized_attention_override"] = lambda: None
     elif change == "unknown_fn":
         opts["model_function_wrapper"] = object()
-    elif change == "partial_sigma":
+    elif change == "nan_sigma":
+        trans["patches"]["attn1_patch"][0].config.sigma_end = float("nan")
+    elif change == "reversed_sigma":
+        trans["patches"]["attn1_patch"][0].config.sigma_start = 0.8
+        trans["patches"]["attn1_patch"][0].config.sigma_end = 0.2
+    elif change == "negative_ramp":
+        trans["patches"]["attn1_patch"][0].config.sigma_ramp = -0.1
+    elif change == "sigma_above_one":
+        trans["patches"]["attn1_patch"][0].config.sigma_end = 1.5
+    elif change == "partial_sigma_without_gain_contract":
         trans["patches"]["attn1_patch"][0].config.sigma_end = 0.5
+        del providers.module._sigma_window_gain
     policy, reason = qualify(opts)
     assert policy is None
     assert reason
+    if change == "partial_sigma_without_gain_contract":
+        assert reason == "unverified Krea 2 Diff-Aid sigma-window contract"
+    elif change.endswith(("sigma", "ramp", "one")):
+        assert reason == "invalid Krea 2 Diff-Aid patch configuration"
+
+
+def _state(value):
+    return {diffaid_reference.STATE_KEY: {"normalized_sigma": value}}
+
+
+@pytest.mark.parametrize("residual", [False, True])
+@pytest.mark.parametrize("window", [(0.0, 0.9, 0.0), (0.1, 0.9, 0.0), (0.2, 0.7, 0.1)])
+def test_partial_diffaid_window_qualifies_with_diffaid_gain(providers, residual, window):
+    opts = model_options(providers, sol=False, residual=residual)
+    trans = opts["transformer_options"]
+    owner = (trans["wrappers"]["diffusion_model"]["diffaid_krea2_text_residual"][0]
+             if residual else trans["patches"]["attn1_patch"][0])
+    owner.config.sigma_start, owner.config.sigma_end, owner.config.sigma_ramp = window
+    policy, reason = qualify(opts)
+    assert reason is None and policy.diffaid_window is not None
+    x = torch.zeros(2, 16, 4, 4, dtype=torch.float32)
+    for value in (1.0, 0.95, 0.9, 0.75, 0.5, 0.15, 0.05, 0.0):
+        expected = diffaid_reference._sigma_window_gain(
+            torch.tensor([value, value]), *window).tolist()
+        assert list(policy.diffaid_regime(_state(torch.tensor([value])), x)) == expected
+    assert matches(policy, trans)
+
+
+def test_full_diffaid_window_has_no_dynamic_regime(providers):
+    opts = model_options(providers, sol=False)
+    opts["transformer_options"]["patches"]["attn1_patch"][0].config.sigma_ramp = 0.3
+    policy, reason = qualify(opts)
+    assert reason is None and policy.diffaid_window is None
+    assert policy.diffaid_regime(_state(0.5), torch.zeros(1, 16, 2, 2)) is None
+
+
+def test_diffaid_regime_matches_diffaid_lookup_and_dtype(providers):
+    opts = model_options(providers, sol=False)
+    config = opts["transformer_options"]["patches"]["attn1_patch"][0].config
+    config.sigma_end = 0.899
+    policy, _ = qualify(opts)
+    f32 = torch.zeros(1, 16, 2, 2, dtype=torch.float32)
+    bf16 = f32.to(torch.bfloat16)
+    # Diff-Aid rounds the normalized sigma to the modulated hidden-state dtype
+    # before comparing: 0.8995 is outside in FP32 but 0.8984375 in BF16.
+    assert policy.diffaid_regime(_state(torch.tensor([0.8995])), f32) == (0.0,)
+    assert policy.diffaid_regime(_state(torch.tensor([0.8995])), bf16) == (1.0,)
+    # A top-level normalized_sigma takes precedence over the injected state.
+    options = {"normalized_sigma": 0.5, **_state(0.95)}
+    assert policy.diffaid_regime(options, f32) == (1.0,)
+    # Diff-Aid falls back to normalized sigma 1.0 without injected state.
+    assert policy.diffaid_regime({}, f32) == (0.0,)
+
+
+def test_diffaid_window_reconfiguration_after_qualification_is_rejected(providers):
+    opts = model_options(providers, sol=False)
+    config = opts["transformer_options"]["patches"]["attn1_patch"][0].config
+    config.sigma_end = 0.9
+    policy, _ = qualify(opts)
+    config.sigma_end = 0.5
+    with pytest.raises(DiffAidGainUnavailable):
+        policy.diffaid_regime(_state(0.7), torch.zeros(1, 16, 2, 2))
 
 
 def test_patch_and_wrapper_mutations_fail_between_sampler_and_model_call(providers):

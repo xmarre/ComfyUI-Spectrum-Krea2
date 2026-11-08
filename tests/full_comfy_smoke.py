@@ -507,6 +507,60 @@ def main():
             assert not base12.diffusion_model.last._forward_pre_hooks
             records.append({'real_diffaid_node': mode, **report})
 
+        # Partial and ramped Diff-Aid sigma windows through the real node and
+        # its SharedTimestepWrapper normalized sigma. Every actual evaluation
+        # must apply exactly the gain Spectrum reproduced for it; history is
+        # restarted at each gain change while forecasting stays enabled.
+        import math
+        from comfyui_spectrum_krea2.qualified_patches import DiffAidWindow
+        original_regime, original_alpha = DiffAidWindow.regime, diff._compute_alpha
+        for mode, window, solver, pece_policy in (
+            ('text_residual', (0., .9, 0.), 'er_sde', 'off'),
+            ('text_residual', (.1, .9, 0.), 'er_sde', 'off'),
+            ('values_only', (.2, .7, .1), 'euler', 'off'),
+            ('keys_and_values', (.1, .9, 0.), 'sa_solver_pece', 'balanced'),
+        ):
+            events = []
+            def spy_regime(self, options, x):
+                value = original_regime(self, options, x)
+                events.append(('regime', value))
+                return value
+            def spy_alpha(reference, token_count, config, options):
+                out = original_alpha(reference, token_count, config, options)
+                events.append(('alpha', float(out.reshape(-1)[0]), config.strength))
+                return out
+            windowed, _ = diff.Krea2DiffAidSparsePatchNode().patch(
+                model12, enabled=True, block_preset='custom_block_indices',
+                block_indices='1', strength=.15, modulation_target=mode,
+                sigma_start=window[0], sigma_end=window[1], sigma_ramp=window[2],
+                token_weight_mode='none', token_tail=.35, cond_only=True,
+            )
+            selected = node.apply(
+                windowed, preset='turbo', warmup=2, tail=1, bootstrap=False,
+                extrapolation_guard_enabled=False, sa_pece_forecast_policy=pece_policy,
+            )[0]
+            DiffAidWindow.regime, diff._compute_alpha = spy_regime, spy_alpha
+            try:
+                _, reports = sample(selected, noise12, positive12, negative12, 1., solver, steps=14)
+            finally:
+                DiffAidWindow.regime, diff._compute_alpha = original_regime, original_alpha
+            report = reports[0]
+            assert report['fallback'] is None, report
+            assert report['forecast'] > 0, report
+            assert report['actual_reasons'].get('Diff-Aid sigma-window transition', 0) >= 1, report
+            latest, gains = None, set()
+            for event in events:
+                if event[0] == 'regime':
+                    latest = event[1]
+                    continue
+                assert latest is not None and len(latest) == 1, events
+                expected = float(torch.tensor(event[2] * latest[0], dtype=torch.float32))
+                assert math.isclose(event[1], expected, rel_tol=0, abs_tol=1e-7), (event, latest)
+                gains.add(latest[0])
+            assert 0.0 in gains and 1.0 in gains, (window, gains)
+            assert not base12.diffusion_model.last._forward_pre_hooks
+            records.append({'diffaid_sigma_window': window, 'mode': mode, 'solver': solver, **report})
+
         # Startup alignment: Spectrum must still perform two REAL DiT
         # evaluations; setting Sol dense_evaluations=0 merely makes both
         # anchors use the same sparse attention operator. A dense->sparse

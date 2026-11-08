@@ -13,6 +13,8 @@ REPORTS = contextvars.ContextVar("spectrum_krea2_reports", default=None)
 # Invocation-scoped quality-control override for upstream composition samplers.
 # The native solver/model path remains unchanged and other jobs are unaffected.
 FORCE_NATIVE = contextvars.ContextVar("spectrum_krea2_force_native", default=False)
+# Diff-Aid regime of a stream before its first evaluation.
+UNOBSERVED = object()
 
 
 @dataclass
@@ -22,6 +24,8 @@ class Stream:
     last_step: int = -1
     last_actual: int = -1
     actual_anchors: int = 0
+    # Diff-Aid sigma-window gain shared by every retained history anchor.
+    diffaid_regime: object = UNOBSERVED
 
 
 @dataclass
@@ -53,6 +57,12 @@ class Session:
     # Set by the SA PECE adapter for a predicted phase the solver will not consume.
     solver_skip: bool = False
     sa_dense_steps: list = field(default_factory=list)
+    # First outer step of the current Diff-Aid sigma-window regime. Solver
+    # dense outputs must not extrapolate across a modulation change.
+    diffaid_regime_start: int = 0
+    # Diff-Aid gain of the latest actual evaluation of any stream. The gain
+    # depends only on the evaluation sigma, so it is shared by all branches.
+    diffaid_regime: object = UNOBSERVED
 
     def disable(self, reason):
         if self.disabled_reason is None:

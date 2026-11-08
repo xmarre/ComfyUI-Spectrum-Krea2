@@ -122,13 +122,22 @@ def sample_sa_solver_isolated(session, model, x, sigmas, extra_args=None, callba
             if actual_preds and (accelerated or (tau_t > 0 and s_noise > 0)):
                 # Stochastic input: x_pred holds a fresh increment the forecast
                 # could not see. Accelerated PECE: the solver owns this value.
-                denoised, mode = causal_denoised(actual_preds, actual_lambdas, actual_steps, lambdas[i],
+                # Only anchors evaluated under the current Diff-Aid gain may
+                # define it; a forecast is served only inside that regime.
+                start = session.diffaid_regime_start
+                keep = [k for k, s in enumerate(actual_steps) if s >= start]
+                if not keep:
+                    raise RuntimeError("SA dense output has no actual anchor in the current Diff-Aid regime")
+                regime_steps = [actual_steps[k] for k in keep]
+                denoised, mode = causal_denoised([actual_preds[k] for k in keep],
+                                                 [actual_lambdas[k] for k in keep],
+                                                 regime_steps, lambdas[i],
                                                  allow_consecutive=accelerated,
                                                  soft_guard=(session.config.sa_pece_forecast_policy == "balanced_detail"))
                 session.counts["sa_dense_output"] += 1
                 session.counts["sa_dense_" + mode] += 1
                 session.sa_dense_steps.append({"step": i, "sigma": round(float(sigmas[i]), 6),
-                                               "mode": mode, "anchors": list(actual_steps[-2:])})
+                                               "mode": mode, "anchors": regime_steps[-2:]})
         if callback is not None:
             callback({"x": x_pred, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised})
         if not forecast:

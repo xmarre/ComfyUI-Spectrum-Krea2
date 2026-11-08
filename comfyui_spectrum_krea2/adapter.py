@@ -6,8 +6,8 @@ import contextvars
 import torch
 from .compat import native_model, verified
 from .forecast import ForecastUnavailable, ForecastNonfinite
-from .runtime import CURRENT
-from .qualified_patches import matches
+from .runtime import CURRENT, UNOBSERVED
+from .qualified_patches import matches, DiffAidGainUnavailable
 
 CAPTURE = contextvars.ContextVar("spectrum_krea2_capture", default=None)
 
@@ -51,6 +51,35 @@ def stream_key(x, context, refs, options, kwargs, inner):
     layout = lambda t: (tuple(t.shape), t.dtype, t.device)
     return (tuple(options["uuids"]), tuple(options["cond_or_uncond"]), layout(x), layout(context),
             tuple(layout(r) for r in refs or []), kwargs.get("ref_latents_method", inner.default_ref_method))
+
+
+def diffaid_skip_transition(session, options, x):
+    """Return (changed, reason) for a solver-owned skip at this evaluation.
+
+    ``changed`` is true when Diff-Aid's gain differs from the gain of the
+    latest actual evaluation. ``reason`` is set when it cannot be reproduced.
+    """
+    policy = session.patch_policy
+    if policy is None or policy.diffaid_window is None:
+        return False, None
+    try:
+        regime = policy.diffaid_regime(options, x)
+    except DiffAidGainUnavailable as exc:
+        return False, str(exc)
+    return session.diffaid_regime is UNOBSERVED or session.diffaid_regime != regime, None
+
+
+def enter_diffaid_regime(session, stream, options, x, step):
+    """Discard history across a Diff-Aid gain change; record the new gain."""
+    regime = session.patch_policy.diffaid_regime(options, x) if session.patch_policy is not None else None
+    if stream.diffaid_regime is not UNOBSERVED and stream.diffaid_regime != regime:
+        stream.history.clear()
+        stream.last_actual = -1
+        stream.actual_anchors = 0
+        session.diffaid_regime_start = max(session.diffaid_regime_start, step)
+        session.reason("Diff-Aid sigma-window transition")
+    stream.diffaid_regime = regime
+    session.diffaid_regime = regime
 
 
 def project(inner, feature, timesteps, x):
@@ -102,7 +131,19 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         if reason is None and session.patch_policy is not None:
             if session.patch_policy.phase(x, context, ref_latents, inner) is None:
                 reason = "qualified Sol-Krea2 sampling scope was lost"
-        if reason:
+        regime_changed = False
+        if reason is None:
+            regime_changed, reason = diffaid_skip_transition(session, options, x)
+        if regime_changed and not session.served_forecast:
+            # The first evaluation in a new Diff-Aid regime is an ordinary
+            # actual call: the solver then sees served_forecast=False and
+            # anchors its history on the exact native result.
+            pass
+        elif regime_changed:
+            raise RuntimeError(
+                "SA-PECE partial predicted-phase skip: Diff-Aid sigma-window transition"
+            )
+        elif reason:
             # One CFG branch may already have been skipped. We cannot undo
             # its placeholder, so abort rather than mix skipped/native branch
             # outputs and silently pass an inconsistent denoised prediction.
@@ -112,12 +153,13 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
                 )
             session.disable("SA-PECE skip qualification changed: " + reason)
             return native()
-        # Active-PECE predicted phase is owned by the solver: the adapter
-        # will replace this placeholder with exact-correction-anchor output.
-        session.counts["forecast"] += 1
-        session.counts["pece_solver_skip"] += 1
-        session.served_forecast = True
-        return torch.zeros_like(x)
+        else:
+            # Active-PECE predicted phase is owned by the solver: the adapter
+            # will replace this placeholder with exact-correction-anchor output.
+            session.counts["forecast"] += 1
+            session.counts["pece_solver_skip"] += 1
+            session.served_forecast = True
+            return torch.zeros_like(x)
     inner = executor.class_obj
     if session.disabled_reason or session.active_step is None:
         return native()
@@ -149,6 +191,11 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
     if stream.last_step >= step:
         stream.history.clear()
         session.reason("repeated branch evaluation at one outer step")
+    try:
+        enter_diffaid_regime(session, stream, options, x, step)
+    except DiffAidGainUnavailable as exc:
+        session.disable(str(exc))
+        return native()
     mode = session.forecast_mode(stream)
     if mode is not None:
         prediction = None

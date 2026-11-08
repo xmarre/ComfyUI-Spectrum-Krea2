@@ -6,6 +6,7 @@ Only the reviewed Sol-Krea2 and Krea2 Diff-Aid implementations are eligible.
 Unknown patches, wrapper owners and model-function decorators fail closed.
 """
 from dataclasses import dataclass
+import math
 import sys
 
 import torch
@@ -46,6 +47,78 @@ def _entries(mapping):
             yield kind, key, value
 
 
+def _diffaid_window(config):
+    """Validated (start, end, ramp), or None for an invalid window."""
+    try:
+        window = tuple(float(getattr(config, name))
+                       for name in ("sigma_start", "sigma_end", "sigma_ramp"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    start, end, ramp = window
+    if (not all(math.isfinite(v) for v in window) or
+            not 0.0 <= start <= end <= 1.0 or ramp < 0.0):
+        return None
+    return window
+
+
+class DiffAidGainUnavailable(RuntimeError):
+    """Diff-Aid's sigma-window gain for an evaluation cannot be reproduced."""
+
+
+@dataclass(frozen=True)
+class DiffAidWindow:
+    """Reproduces Diff-Aid's own per-evaluation sigma-window gain.
+
+    Diff-Aid multiplies its modulation by ``_sigma_window_gain`` of the
+    normalized sigma that its SharedTimestepWrapper injected into the
+    transformer options of the same evaluation. Inside one constant gain the
+    patched operator is a fixed function, so forecast history is valid. A gain
+    change is a discontinuous operator change, so the caller treats it as a
+    regime boundary that requires fresh actual anchors.
+    """
+    owner: object
+    config: object
+    window: tuple
+    state_key: str
+    coerce: object
+    gain: object
+
+    def regime(self, options, x):
+        if self.owner.config is not self.config or _diffaid_window(self.config) != self.window:
+            raise DiffAidGainUnavailable("Diff-Aid sigma-window configuration changed")
+        # Same lookup order as Diff-Aid's _compute_alpha.
+        normalized = options.get("normalized_sigma", None)
+        if normalized is None:
+            state = options.get(self.state_key, {}) or {}
+            normalized = state.get("normalized_sigma", None)
+        if normalized is None:
+            normalized = 1.0
+        # Diff-Aid casts the normalized sigma to the dtype of the hidden state
+        # it modulates before the float32 window comparison. Krea 2's text
+        # residual and text K/V use the DiT input dtype. The rounding and the
+        # comparison are device-independent, so evaluate them on the CPU.
+        try:
+            sigma = self.coerce(normalized, x.shape[0], "cpu", x.dtype)
+            gain = self.gain(sigma, self.window[0], self.window[1], self.window[2])
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise DiffAidGainUnavailable("Diff-Aid sigma-window gain failed: " + str(exc)) from exc
+        values = tuple(float(v) for v in gain.reshape(-1).tolist())
+        if len(values) != x.shape[0] or not all(math.isfinite(v) for v in values):
+            raise DiffAidGainUnavailable("Diff-Aid sigma-window gain is malformed")
+        return values
+
+
+def _diffaid_gain_contract(owner, config, window):
+    """Bind Diff-Aid's own gain helpers from the module of its verified owner."""
+    module = sys.modules.get(type(owner).__module__)
+    state_key = getattr(module, "STATE_KEY", None)
+    coerce = getattr(module, "_coerce_batch_value", None)
+    gain = getattr(module, "_sigma_window_gain", None)
+    if type(state_key) is not str or not callable(coerce) or not callable(gain):
+        return None
+    return DiffAidWindow(owner, config, window, state_key, coerce, gain)
+
+
 @dataclass(frozen=True)
 class QualifiedPatches:
     sol_override: object = None
@@ -55,6 +128,13 @@ class QualifiedPatches:
     kj_preview_method: object = None
     kj_preview_code: object = None
     verified_wrappers: tuple = ()
+    diffaid_window: DiffAidWindow | None = None
+
+    def diffaid_regime(self, options, x):
+        """Diff-Aid gain of the NEXT evaluation; None while it cannot change."""
+        if self.diffaid_window is None:
+            return None
+        return self.diffaid_window.regime(options, x)
 
     def sol_status(self):
         if self.sol_override is None:
@@ -176,7 +256,7 @@ def qualify(model_options):
                  status["settings"].extra_tokens != sol_mark["extra_tokens"])):
             return None, "unverified Sol-Krea2 attention ownership"
 
-    diffaid_patch, diffaid_wrapper = None, None
+    diffaid_patch, diffaid_wrapper, diffaid_window = None, None, None
     fn_wrapper = model_options.get("model_function_wrapper")
     patches = trans.get("patches", {}) or {}
     if patches and (not isinstance(patches, dict) or set(patches) - {"attn1_patch"}):
@@ -193,21 +273,28 @@ def qualify(model_options):
             diffaid_patch = attn[0]
             if diffaid_patch.attention_target not in {"values_only", "keys_and_values"}:
                 return None, "unsupported Diff-Aid Krea 2 attention mode"
+            owner = diffaid_patch
             config = diffaid_patch.config
             blocks = diffaid_patch.selected_blocks
         elif not attn and len(residuals) == 1 and _registered_type(residuals[0], "Krea2TextResidualWrapper"):
             diffaid_wrapper = residuals[0]
+            owner = diffaid_wrapper
             config = diffaid_wrapper.config
             blocks = diffaid_wrapper.selected_blocks
         else:
             return None, "unverified Krea 2 Diff-Aid patch ownership"
-        # A partially active sigma window changes the numerical operator
-        # discontinuously. Keep it native until time-dependent patch history
-        # and boundary receipts have been explicitly validated.
-        if (config.sigma_start != 0.0 or config.sigma_end != 1.0 or
-                config.sigma_ramp != 0.0 or not blocks or
+        window = _diffaid_window(config)
+        if (window is None or not blocks or
                 any(type(k) is not int or not 0 <= k < 28 for k in blocks)):
-            return None, "dynamic or invalid Krea 2 Diff-Aid patch configuration"
+            return None, "invalid Krea 2 Diff-Aid patch configuration"
+        # A full window has gain one at every sigma. A partial or ramped window
+        # changes the patched operator over the trajectory; the adapter then
+        # re-evaluates Diff-Aid's own gain on every call and starts fresh
+        # forecast history whenever it changes.
+        if not (window[0] <= 0.0 and window[1] >= 1.0):
+            diffaid_window = _diffaid_gain_contract(owner, config, window)
+            if diffaid_window is None:
+                return None, "unverified Krea 2 Diff-Aid sigma-window contract"
 
     # OUTER_SAMPLE preview observers are outside the solver/denoiser path.
     # Admit the registered KJ observer regardless of its implementation
@@ -247,7 +334,7 @@ def qualify(model_options):
         sol_override, diffaid_patch, diffaid_wrapper, kj_preview,
         type(kj_preview).__call__ if kj_preview is not None else None,
         getattr(type(kj_preview).__call__, "__code__", None) if kj_preview is not None else None,
-        frozen,
+        frozen, diffaid_window,
     ), None
 
 

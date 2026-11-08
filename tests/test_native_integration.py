@@ -416,6 +416,11 @@ def test_sol_attention_route_history_invalidation_is_single_event(
     monkeypatch.setattr(adapter, "matches", lambda policy, options: True)
 
     class SimulatedSol:
+        diffaid_window = None
+
+        def diffaid_regime(self, options, x):
+            return None
+
         def phase(self, x, context, refs, inner):
             return "dense" if session.counts["actual"] == 0 else "sol"
 
@@ -874,3 +879,100 @@ def test_sa_pece_skip_rejects_partial_cfg_branch_mutation(native):
     finally:
         CURRENT.reset(token)
     assert not model.last._forward_pre_hooks
+
+
+def _diffaid_policy(window):
+    import diffaid_reference
+    from comfyui_spectrum_krea2.qualified_patches import DiffAidWindow, QualifiedPatches
+    config = types.SimpleNamespace(sigma_start=window[0], sigma_end=window[1], sigma_ramp=window[2])
+    owner = types.SimpleNamespace(config=config)
+    return QualifiedPatches(diffaid_window=DiffAidWindow(
+        owner, config, tuple(window), diffaid_reference.STATE_KEY,
+        diffaid_reference._coerce_batch_value, diffaid_reference._sigma_window_gain))
+
+
+def _diffaid_options(normalized_sigma):
+    import diffaid_reference
+    return {'uuids': [uuid.UUID(int=1)], 'cond_or_uncond': [0],
+            diffaid_reference.STATE_KEY: {'normalized_sigma': torch.tensor([normalized_sigma])}}
+
+
+@pytest.mark.parametrize('normalized, transition', [
+    # Diff-Aid inactive above 0.6, then active: the window opens at step 3.
+    ((0.95, 0.85, 0.75, 0.5, 0.3), 3),
+    # No gain change: forecasts follow the ordinary schedule.
+    ((0.5, 0.45, 0.4, 0.35, 0.3), None),
+])
+def test_diffaid_window_transition_starts_fresh_forecast_history(native, monkeypatch, normalized, transition):
+    import comfyui_spectrum_krea2.adapter as adapter
+    model = tiny_model(native[0])
+    x, t, context = inputs(model)
+    # The guard would reject the wide test-coordinate extrapolation at step 2.
+    binding, session = setup_session(model, x, Config(preset='turbo', warmup=2, tail=1, bootstrap=False,
+                                                      extrapolation_guard_enabled=False))
+    monkeypatch.setattr(adapter, 'matches', lambda policy, options: True)
+    session.patch_policy = _diffaid_policy((0.0, 0.6, 0.0))
+    served = []
+    token = CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            for step, value in enumerate(normalized):
+                session.active_step = step
+                before = session.counts['forecast']
+                call(model, binding, x, t, context, options=_diffaid_options(value))
+                served.append(session.counts['forecast'] > before)
+                stream = next(iter(session.streams.values()))
+                assert stream.diffaid_regime == ((1.0,) if value <= 0.6 else (0.0,))
+                if step == transition:
+                    # Only the exact actual of the new regime is retained.
+                    assert not served[-1]
+                    assert len(stream.history.features) == 1 and stream.last_actual == step
+    finally:
+        CURRENT.reset(token)
+    assert session.disabled_reason is None
+    # Steps 0-1 are warmup and 4 is the tail; step 2 forecasts in both cases.
+    assert served[2]
+    if transition is None:
+        assert 'Diff-Aid sigma-window transition' not in session.reasons
+        assert session.diffaid_regime_start == 0
+    else:
+        assert session.reasons['Diff-Aid sigma-window transition'] == 1
+        assert session.diffaid_regime_start == transition
+    assert not model.last._forward_pre_hooks
+
+
+def test_diffaid_window_transition_blocks_sa_pece_solver_skip(native, monkeypatch):
+    import comfyui_spectrum_krea2.adapter as adapter
+    model = tiny_model(native[0])
+    x, t, context = inputs(model)
+    binding, session = setup_session(model, x, Config(preset='turbo', warmup=2, tail=1, bootstrap=False))
+    monkeypatch.setattr(adapter, 'matches', lambda policy, options: True)
+    session.patch_policy = _diffaid_policy((0.0, 0.6, 0.0))
+    token = CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            session.active_step = 0
+            call(model, binding, x, t, context, options=_diffaid_options(0.9))
+            # Same gain: the solver-owned skip proceeds.
+            session.active_step, session.solver_skip, session.served_forecast = 1, True, False
+            out = call(model, binding, x, t, context, options=_diffaid_options(0.8))
+            assert session.served_forecast and session.counts['pece_solver_skip'] == 1
+            assert torch.count_nonzero(out) == 0
+            # New gain: the evaluation is a native actual, not a skip.
+            actual = session.counts['actual']
+            session.active_step, session.served_forecast = 2, False
+            expected = model(x, t, context)
+            out = call(model, binding, x, t, context, options=_diffaid_options(0.5))
+            assert not session.served_forecast and session.counts['pece_solver_skip'] == 1
+            assert session.counts['actual'] == actual + 1
+            torch.testing.assert_close(out, expected, atol=0, rtol=0)
+            assert session.diffaid_regime == (1.0,) and session.diffaid_regime_start == 2
+            # A gain change after another branch was already skipped cannot be
+            # reconciled; it fails loudly instead of mixing operators.
+            session.active_step, session.served_forecast = 3, True
+            with pytest.raises(RuntimeError, match='Diff-Aid sigma-window transition'):
+                call(model, binding, x, t, context, options=_diffaid_options(0.7))
+            assert session.disabled_reason is None
+    finally:
+        session.solver_skip = False
+        CURRENT.reset(token)
