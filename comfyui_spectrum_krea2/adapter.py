@@ -72,10 +72,16 @@ def diffaid_skip_transition(session, options, x):
 def enter_diffaid_regime(session, stream, options, x, step):
     """Discard history across a Diff-Aid gain change; record the new gain."""
     regime = session.patch_policy.diffaid_regime(options, x) if session.patch_policy is not None else None
-    if stream.diffaid_regime is not UNOBSERVED and stream.diffaid_regime != regime:
+    stream_changed = stream.diffaid_regime is not UNOBSERVED and stream.diffaid_regime != regime
+    global_changed = session.diffaid_regime is not UNOBSERVED and session.diffaid_regime != regime
+    if stream_changed:
         stream.history.clear()
         stream.last_actual = -1
         stream.actual_anchors = 0
+    if global_changed or stream_changed:
+        # The SA solver's dense-output anchors are global, not per stream.
+        # A new conditioning stream at the window boundary still requires
+        # invalidating the old regime's dense-output anchors.
         session.diffaid_regime_start = max(session.diffaid_regime_start, step)
         session.reason("Diff-Aid sigma-window transition")
     stream.diffaid_regime = regime
@@ -134,16 +140,13 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         regime_changed = False
         if reason is None:
             regime_changed, reason = diffaid_skip_transition(session, options, x)
-        if regime_changed and not session.served_forecast:
-            # The first evaluation in a new Diff-Aid regime is an ordinary
-            # actual call: the solver then sees served_forecast=False and
-            # anchors its history on the exact native result.
-            pass
-        elif regime_changed:
+        if regime_changed and session.served_forecast:
+            # A prior CFG branch at this step already emitted a placeholder.
+            # It cannot be undone, so refuse a mixed skipped/native result.
             raise RuntimeError(
                 "SA-PECE partial predicted-phase skip: Diff-Aid sigma-window transition"
             )
-        elif reason:
+        if reason:
             # One CFG branch may already have been skipped. We cannot undo
             # its placeholder, so abort rather than mix skipped/native branch
             # outputs and silently pass an inconsistent denoised prediction.
@@ -153,7 +156,13 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
                 )
             session.disable("SA-PECE skip qualification changed: " + reason)
             return native()
-        else:
+        if regime_changed:
+            # All separate CFG branches in this predicted-phase step must
+            # evaluate the real model. After the first branch the session-wide
+            # regime already equals the new gain; checking only that value
+            # would otherwise skip subsequent branches.
+            session.diffaid_force_native_step = session.active_step
+        if session.diffaid_force_native_step != session.active_step:
             # Active-PECE predicted phase is owned by the solver: the adapter
             # will replace this placeholder with exact-correction-anchor output.
             session.counts["forecast"] += 1

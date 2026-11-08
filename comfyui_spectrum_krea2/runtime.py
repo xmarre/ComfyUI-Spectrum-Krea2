@@ -63,6 +63,10 @@ class Session:
     # Diff-Aid gain of the latest actual evaluation of any stream. The gain
     # depends only on the evaluation sigma, so it is shared by all branches.
     diffaid_regime: object = UNOBSERVED
+    # An SA-PECE gain boundary forces ALL separately evaluated CFG branches
+    # of this predicted phase to be actual. A session-wide gain changes after
+    # the first branch, so comparing it alone would skip later branches.
+    diffaid_force_native_step: int | None = None
 
     def disable(self, reason):
         if self.disabled_reason is None:

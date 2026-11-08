@@ -976,3 +976,78 @@ def test_diffaid_window_transition_blocks_sa_pece_solver_skip(native, monkeypatc
     finally:
         session.solver_skip = False
         CURRENT.reset(token)
+
+def test_diffaid_sa_pece_window_transition_forces_all_split_cfg_branches_native(native, monkeypatch):
+    """Never mix a native first CFG branch with a skipped second one at a gain boundary."""
+    import comfyui_spectrum_krea2.adapter as adapter
+    model = tiny_model(native[0])
+    x, timestep, context = inputs(model)
+    binding, session = setup_session(model, x)
+    monkeypatch.setattr(adapter, 'matches', lambda policy, options: True)
+    session.patch_policy = _diffaid_policy((0.0, 0.6, 0.0))
+    first = _diffaid_options(0.9)
+    second = {**first, 'uuids': [uuid.UUID(int=2)], 'cond_or_uncond': [1]}
+    new_first = _diffaid_options(0.5)
+    new_second = {**second,
+                  'diffaid_runtime_state': {'normalized_sigma': torch.tensor([0.5])}}
+    token = CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            session.active_step = 0
+            call(model, binding, x, timestep, context, options=first)
+            call(model, binding, x, timestep, context, options=second)
+            assert session.counts['actual'] == 2
+
+            # The first branch opens the Diff-Aid window. The second branch
+            # must not skip simply because the first has updated session gain.
+            session.active_step = 1
+            session.solver_skip = True
+            first_expected = model(x, timestep, context)
+            first_got = call(model, binding, x, timestep, context, options=new_first)
+            torch.testing.assert_close(first_got, first_expected, atol=0, rtol=0)
+            assert session.diffaid_force_native_step == 1
+            second_got = call(model, binding, x, timestep, context, options=new_second)
+            torch.testing.assert_close(second_got, first_expected, atol=0, rtol=0)
+            assert session.counts['actual'] == 4
+            assert session.counts['pece_solver_skip'] == 0
+            assert not session.served_forecast
+            assert session.diffaid_regime_start == 1
+
+            # The native-only decision is step-scoped; the following stable
+            # step may again use the solver-owned predicted-phase skip.
+            session.active_step = 2
+            skipped_first = call(model, binding, x, timestep, context, options=new_first)
+            skipped_second = call(model, binding, x, timestep, context, options=new_second)
+            assert torch.count_nonzero(skipped_first) == 0
+            assert torch.count_nonzero(skipped_second) == 0
+            assert session.counts['pece_solver_skip'] == 2
+    finally:
+        session.solver_skip = False
+        CURRENT.reset(token)
+    assert not model.last._forward_pre_hooks
+
+
+def test_diffaid_transition_on_new_stream_resets_global_dense_history(native, monkeypatch):
+    """A new CFG stream must still advance SA's global dense-output regime boundary."""
+    import comfyui_spectrum_krea2.adapter as adapter
+    model = tiny_model(native[0])
+    x, timestep, context = inputs(model)
+    binding, session = setup_session(model, x)
+    monkeypatch.setattr(adapter, 'matches', lambda policy, options: True)
+    session.patch_policy = _diffaid_policy((0.0, 0.6, 0.0))
+    first = _diffaid_options(0.9)
+    second = {**_diffaid_options(0.5), 'uuids': [uuid.UUID(int=2)],
+              'cond_or_uncond': [1]}
+    token = CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            session.active_step = 0
+            call(model, binding, x, timestep, context, options=first)
+            assert session.diffaid_regime_start == 0
+            session.active_step = 2
+            call(model, binding, x, timestep, context, options=second)
+            assert session.diffaid_regime_start == 2
+            assert session.reasons['Diff-Aid sigma-window transition'] == 1
+    finally:
+        CURRENT.reset(token)
+    assert not model.last._forward_pre_hooks
