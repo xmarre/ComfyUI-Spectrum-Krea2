@@ -55,7 +55,7 @@ Attention dispatch remains native. Unknown transformer wrappers fall back conser
 The opt-in [Spectrum Krea 2 PR #2](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/2) overlay adds narrowly qualified support for two MODEL patch providers:
 
 - [Sol-H3 PR #44](https://github.com/xmarre/ComfyUI-Sol-H3/pull/44), through its **Sol-Krea2 Sparse Attention (Experimental)** node. Its own first dense evaluation remains part of the numerical attention history. BF16 uses packaged Sana CuTe; native FP16 uses the ComfyUI Kitchen kernel with protected text-conditioning blocks and 256 additional selected tokens by default. The FP16 route is experimental and has not been validated on a real checkpoint.
-- [Diff-Aid PR #12](https://github.com/xmarre/ComfyUI-DiffAid-Patches/pull/12), through its Krea 2 node in **text_residual**, **values_only**, or **keys_and_values** mode, for full nonramped sigma windows.
+- [Diff-Aid PR #12](https://github.com/xmarre/ComfyUI-DiffAid-Patches/pull/12), through its Krea 2 node in **text_residual**, **values_only**, or **keys_and_values** mode, with any valid sigma window, including partial and ramped windows.
 
 Install the relevant PR overlays using ComfyUI Patcher. MODEL wiring:
 
@@ -65,7 +65,9 @@ Install the relevant PR overlays using ComfyUI Patcher. MODEL wiring:
       -> Spectrum Apply Krea 2
       -> guider / sampler
 
-A combined run requires **both** Spectrum PR #2 and Sol-H3 PR #44; add Diff-Aid PR #12 if Diff-Aid is used. The integration refuses unknown transformer replacements, unreviewed model-function wrappers, and partial/ramped Diff-Aid sigma windows. These paths continue to use native sampling without forecasts.
+A combined run requires **both** Spectrum PR #2 and Sol-H3 PR #44; add Diff-Aid PR #12 if Diff-Aid is used. The integration refuses unknown transformer replacements, unreviewed model-function wrappers, and invalid Diff-Aid sigma windows. These paths continue to use native sampling without forecasts.
+
+A partial or ramped Diff-Aid sigma window changes the patched model during sampling. Spectrum evaluates Diff-Aid's own window gain for every model call. When the gain changes, retained history is discarded and the step runs the real model, so no forecast or SA-PECE extrapolation crosses the change. Forecasting resumes once enough new actual anchors exist under the new gain. Each change therefore costs forecast opportunities. A window that opens or closes near the end of a short pass may leave no forecastable steps in it. Ramp shoulders change the gain at every step and run natively. The console summary reports each change as `Diff-Aid sigma-window transition`.
 
 Spectrum does not extrapolate from anchors collected under a different attention backend. With Sol-Krea2's default `dense_evaluations=1`, the initial dense-to-sparse switch invalidates the first captured feature and may cost forecasts. To **align the two actual warmup steps** without an attention-route transition, explicitly set Sol-Krea2 `dense_evaluations=0`, retain Spectrum `warmup=2` and `bootstrap=false`, and leave Sol `dense_layers=2` and `extra_tokens=256` for initial quality tests. Spectrum still executes both initial denoiser evaluations; the first is now sparse rather than fully dense. This may alter initial image composition, so use a matched-seed dense comparison before accepting the change.
 
