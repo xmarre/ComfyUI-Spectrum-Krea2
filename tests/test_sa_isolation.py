@@ -117,6 +117,71 @@ def test_stochastic_forecasts_cannot_reach_the_trajectory(native, use_pece):
     assert session.counts["sa_ephemeral_forecast"] == len(forecasts)
 
 
+
+@pytest.mark.parametrize("use_pece", [False, True])
+def test_stochastic_adams_stencil_provenance(native, monkeypatch, use_pece):
+    """Past Adams endpoints must be actual, including PECE corrections."""
+    from comfy.k_diffusion import sampling, sa_solver
+
+    x = torch.randn(1, 2, 4, 6, generator=torch.Generator().manual_seed(47))
+    forecast_steps = {3, 5, 7}
+    session = session_for(len(SIGMAS) - 1)
+
+    class TracedSteps(Steps):
+        def __init__(self):
+            super().__init__(session, Model(), forecast_steps,
+                             lambda value, step: torch.full_like(value, 1e6))
+            self.actual_steps = set()
+
+        def __call__(self, value, sigma, **kwargs):
+            previous_step = self.step
+            output = super().__call__(value, sigma, **kwargs)
+            if self.step not in forecast_steps or self.step == previous_step:
+                # A PECE correction evaluates the same sigma a second time.
+                self.actual_steps.add(self.step)
+            return output
+
+    model = TracedSteps()
+    model_sampling = model.inner_model.model_patcher.get_model_object("model_sampling")
+    effective = sampling.offset_first_sigma_for_snr(SIGMAS, model_sampling)
+    lambdas = sampling.sigma_to_half_log_snr(effective, model_sampling=model_sampling)
+    original_coefficients = sa_solver.compute_stochastic_adams_b_coeffs
+    inspected = []
+
+    def checked_coefficients(sigma, curr_lambdas, *args, **kwargs):
+        source_steps = []
+        for source_lambda in curr_lambdas:
+            matching = [
+                step for step, expected in enumerate(lambdas[:-1])
+                if bool(torch.isclose(source_lambda, expected, rtol=1e-6, atol=1e-6))
+            ]
+            assert len(matching) == 1
+            source = matching[0]
+            source_steps.append(source)
+            assert source <= model.step
+            if source < model.step:
+                assert source in model.actual_steps, (
+                    f"forecast from step {source} leaked into step {model.step} Adams history"
+                )
+        inspected.append((model.step, tuple(source_steps)))
+        return original_coefficients(sigma, curr_lambdas, *args, **kwargs)
+
+    monkeypatch.setattr(sa_solver, "compute_stochastic_adams_b_coeffs", checked_coefficients)
+    with torch.no_grad():
+        output = sample_sa_solver_isolated(
+            session, model, x, SIGMAS, tau_func=lambda sigma: 0.8,
+            s_noise=0.7, use_pece=use_pece, noise_sampler=noise_sampler_factory(47)
+        )
+    assert torch.isfinite(output).all()
+    assert inspected
+    assert all(any(step == forecast and forecast in sources for step, sources in inspected)
+               for forecast in forecast_steps)
+    if use_pece:
+        assert forecast_steps <= model.actual_steps
+    else:
+        assert forecast_steps.isdisjoint(model.actual_steps)
+
+
 def test_deterministic_forecast_is_used_but_never_persisted(native):
     """On ODE steps a forecast is the current endpoint, not later history."""
     x = torch.randn(1, 2, 4, 6, generator=torch.Generator().manual_seed(9))
