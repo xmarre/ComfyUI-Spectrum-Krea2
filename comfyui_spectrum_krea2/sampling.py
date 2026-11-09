@@ -58,7 +58,7 @@ def validate_sampler(executor, model_wrap, sigmas, extra_args):
         getattr(sampling, "sample_sa_solver_pece", None),
     )
     if function not in allowed:
-        return "only audited native Euler, DPM++ 2M, RES Multistep, Gradient Estimation, DEIS, iPNDM and ER-SDE solvers are forecast-enabled"
+        return "only audited native Euler, DPM++ 2M, RES Multistep, Gradient Estimation, DEIS, iPNDM, iPNDM-V, ER-SDE, SA-Solver and SA-Solver PECE solvers are forecast-enabled"
     if not verified(function, "native." + function.__name__):
         return "native solver source contract changed: " + function.__name__
     if (function is getattr(sampling, "sample_res_multistep", None)
@@ -183,11 +183,13 @@ class Binding:
         if not model_contract(inner):
             reason = reason or "native Krea 2 source contract changed"
         effective_sigmas = sigmas
+        # A rejected solver may be any callable, e.g. functools.partial.
+        solver_name = getattr(executor.class_obj.sampler_function, "__name__", None)
         # Native ER-SDE evaluates the first CONST timestep at a slightly
         # reduced sigma to avoid infinite log-SNR. Forecast history must use
         # the actual denoiser coordinates while preserving the original
         # sampler's noise scaling and stochastic update.
-        if reason is None and executor.class_obj.sampler_function.__name__ in (
+        if reason is None and solver_name in (
                 "sample_er_sde", "sample_sa_solver", "sample_sa_solver_pece"):
             from comfy.k_diffusion import sampling
             model_sampling = model_wrap.model_patcher.get_model_object("model_sampling")
@@ -204,14 +206,12 @@ class Binding:
                           noise.shape[0], tuple(noise.shape[-2:]))
         session.weight_owner = model_wrap.inner_model
         sa_options = executor.class_obj.extra_options
-        is_sa = executor.class_obj.sampler_function.__name__ in (
-            "sample_sa_solver", "sample_sa_solver_pece"
-        )
+        is_sa = solver_name in ("sample_sa_solver", "sample_sa_solver_pece")
         # An unrelated nested Euler/ER-SDE sampler in the same context must
         # retain its own forecast policy; only SA scopes opt into native-only.
         session.native_only = is_sa and bool(FORCE_NATIVE.get())
         session.pece_enabled = (is_sa and
-            (executor.class_obj.sampler_function.__name__ == "sample_sa_solver_pece" or
+            (solver_name == "sample_sa_solver_pece" or
              sa_options.get("use_pece", False)))
         session.pece_corrector_order = (
             sa_options.get("corrector_order", 4) if session.pece_enabled else 0

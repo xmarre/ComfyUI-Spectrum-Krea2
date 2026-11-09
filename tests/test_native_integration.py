@@ -117,6 +117,32 @@ def run(model, config=None, steps=12, split=False, sigmas=None, options=None, ca
     return result,reports[0]
 
 
+def test_unnamed_solver_callable_falls_back_to_native(native):
+    # functools.partial has no __name__; it must reach native fallback, not crash.
+    from comfy.samplers import KSAMPLER
+    from comfy.k_diffusion import sampling
+    from comfy.patcher_extension import WrapperExecutor
+    model=tiny_model(native[0])
+    x,t,context=inputs(model)
+    binding=Binding(Config())
+    owner=Owner(model,binding,{},context,False)
+    sigmas=torch.linspace(1.,0.,9)
+    reports=[]
+    token=REPORTS.set(reports)
+    try:
+        with torch.no_grad():
+            sampler=KSAMPLER(partial(sampling.sample_euler,s_churn=0.))
+            executor=WrapperExecutor.new_class_executor(sampler.sample,sampler,[binding.sampler])
+            result=executor.execute(owner,sigmas,{'model_options':{'transformer_options':{}}},None,x,torch.zeros_like(x))
+            native=KSAMPLER(sampling.sample_euler).sample(owner,sigmas,{'model_options':{'transformer_options':{}}},None,x,torch.zeros_like(x))
+    finally:
+        REPORTS.reset(token)
+    assert reports[0]['fallback'].startswith('only audited native')
+    assert reports[0]['forecast']==0
+    torch.testing.assert_close(result,native,atol=0,rtol=0)
+    assert CURRENT.get() is None
+
+
 @pytest.mark.parametrize('sampler_name',[
     'sample_euler', 'sample_dpmpp_2m',
     'sample_res_multistep', 'sample_gradient_estimation',
