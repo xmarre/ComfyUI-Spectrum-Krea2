@@ -1,4 +1,5 @@
 import dataclasses
+import math
 import pytest
 import torch
 from comfyui_spectrum_krea2.config import Config
@@ -81,7 +82,15 @@ def test_history_alias_is_explicit_ownership_contract():
         h.observe(-.5,torch.ones(2,2,3))
 
 
-@pytest.mark.parametrize('change', [dict(degree=0),dict(degree=5),dict(ridge=float('nan')),dict(max_history=1),dict(window=5),dict(growth=float('inf')),dict(tail=0),dict(storage='auto'),dict(budget_mb=0),dict(bootstrap=1)])
+@pytest.mark.parametrize('change', [dict(degree=0),dict(degree=5),dict(ridge=float('nan')),dict(max_history=1),dict(window=5),dict(growth=float('inf')),dict(tail=0),dict(storage='auto'),dict(budget_mb=0),dict(bootstrap=1),
+    dict(extrapolation_guard_enabled=1),
+    dict(extrapolation_guard_enabled=None),
+    dict(max_extrapolation_span_ratio=float('nan')),
+    dict(max_extrapolation_span_ratio=float('inf')),
+    dict(max_extrapolation_span_ratio=-1),
+    dict(max_extrapolation_span_ratio=0),
+    dict(max_extrapolation_span_ratio=8.01),
+    dict(max_extrapolation_span_ratio=True)])
 def test_invalid_config(change):
     with pytest.raises(ValueError):
         Config(**change)
@@ -118,3 +127,59 @@ def test_one_point_hold_is_an_owned_copy_of_the_only_anchor():
     bad=History(Config()); bad.observe(-1.,torch.full((1,2),float('nan')))
     with pytest.raises(ForecastUnavailable):
         bad.predict_hold('cpu',torch.float32)
+
+
+
+@pytest.mark.parametrize('enabled, ratio, accepted', [
+    (True, .5, False),     # Existing behavior and default remain unchanged.
+    (True, .6, False),
+    (True, .9, True),
+    (False, .5, True),    # A disabled guard ignores the configured limit.
+    (False, .05, True),
+])
+def test_extrapolation_distance_guard_is_configurable(enabled, ratio, accepted):
+    history = History(Config(extrapolation_guard_enabled=enabled,
+                             max_extrapolation_span_ratio=ratio))
+    for x in (-1., -.9):
+        history.observe(x, torch.ones(1, 4, 8))
+    if accepted:
+        output = history.predict(-.82, 'cpu', torch.float32)
+        assert torch.isfinite(output).all()
+    else:
+        with pytest.raises(ForecastUnavailable, match='extrapolation exceeds'):
+            history.predict(-.82, 'cpu', torch.float32)
+
+
+def test_disabled_extrapolation_guard_retains_other_numerical_bounds():
+    no_guard = Config(extrapolation_guard_enabled=False, ridge=0.)
+    near_degenerate = History(no_guard)
+    near_degenerate.observe(-1., torch.ones(1, 2, 3))
+    near_degenerate.observe(-1. + 1e-11, torch.ones(1, 2, 3))
+    with pytest.raises(ForecastUnavailable, match='span is too small'):
+        near_degenerate.predict(-.999, 'cpu', torch.float32)
+
+    unstable = History(no_guard)
+    unstable.observe(-1., torch.ones(1, 2, 3))
+    unstable.observe(-.99, torch.ones(1, 2, 3))
+    with pytest.raises(ForecastUnavailable, match='unstable regression weights'):
+        unstable.predict(.9, 'cpu', torch.float32)
+
+    with pytest.raises(ForecastUnavailable, match='inside the sampling domain'):
+        unstable.predict(1.01, 'cpu', torch.float32)
+
+
+@pytest.mark.parametrize('target, accepted', [
+    (0.5 - 1e-6, True),
+    (0.5, True),
+    (0.5 + 1e-12, True),   # the comparison tolerance
+    (math.nextafter(0.5 + 1e-12, math.inf), False),
+])
+def test_extrapolation_guard_tolerance_boundary(target, accepted):
+    history = History(Config())  # default ratio 0.5
+    for x in (-1., 0.):
+        history.observe(x, torch.ones(1, 4, 8))
+    if accepted:
+        assert torch.isfinite(history.predict(target, 'cpu', torch.float32)).all()
+    else:
+        with pytest.raises(ForecastUnavailable, match='extrapolation exceeds'):
+            history.predict(target, 'cpu', torch.float32)
