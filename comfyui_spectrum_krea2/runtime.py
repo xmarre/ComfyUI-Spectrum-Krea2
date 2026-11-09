@@ -10,14 +10,22 @@ from .forecast import History, ForecastUnavailable
 LOG = logging.getLogger(__name__)
 CURRENT = contextvars.ContextVar("spectrum_krea2_session", default=None)
 REPORTS = contextvars.ContextVar("spectrum_krea2_reports", default=None)
+# Invocation-scoped quality-control override for upstream composition samplers.
+# The native solver/model path remains unchanged and other jobs are unaffected.
+FORCE_NATIVE = contextvars.ContextVar("spectrum_krea2_force_native", default=False)
+# Diff-Aid regime of a stream before its first evaluation.
+UNOBSERVED = object()
 
 
 @dataclass
 class Stream:
     history: History
+    route: str | None = None
     last_step: int = -1
     last_actual: int = -1
     actual_anchors: int = 0
+    # Diff-Aid sigma-window gain shared by every retained history anchor.
+    diffaid_regime: object = UNOBSERVED
 
 
 @dataclass
@@ -38,6 +46,38 @@ class Session:
     disabled_reason: str | None = None
     peak_history_bytes: int = 0
     weight_owner: object = None
+    patch_policy: object = None
+    native_only: bool = False
+    pece_enabled: bool = False
+    pece_corrector_order: int = 0
+    pece_pending_step: int | None = None
+    pece_sigmas: tuple = ()
+    # Set when Spectrum served a forecast for the current denoiser opportunity.
+    served_forecast: bool = False
+    # Set by the SA PECE adapter for a predicted phase the solver will not consume.
+    solver_skip: bool = False
+    sa_dense_steps: list = field(default_factory=list)
+    # First outer step of the current numerical regime: a Diff-Aid gain or a
+    # planned Sol attention route. Solver dense outputs must not extrapolate
+    # across a change of the evaluated operator.
+    anchor_regime_start: int = 0
+    # Diff-Aid gain of the latest actual evaluation of any stream. The gain
+    # depends only on the evaluation sigma, so it is shared by all branches.
+    diffaid_regime: object = UNOBSERVED
+    # An SA-PECE regime boundary forces ALL separately evaluated CFG branches
+    # of this predicted phase to be actual. A session-wide record changes after
+    # the first branch, so comparing it alone would skip later branches.
+    force_native_step: int | None = None
+    # Attention route (native, dense or sol) of the latest actual evaluation,
+    # PECE corrections included.
+    attention_route: str | None = None
+    # Outer step a native PECE correction is evaluating, else None.
+    correction_step: int | None = None
+    # Routes realized by the branches of each (step, phase) evaluation. The
+    # solver combines branches into one anchor; a mixed set taints it.
+    step_routes: dict = field(default_factory=dict)
+    # model_function_wrapper qualified at sampler entry.
+    model_function_wrapper: object = None
 
     def disable(self, reason):
         if self.disabled_reason is None:
@@ -65,6 +105,8 @@ class Session:
     def forecast_mode(self, stream):
         """None for an actual call, else "bootstrap" or "regression"."""
         step = self.active_step
+        if self.native_only:
+            return None
         if step is None or stream.last_step >= step:
             return None
         if step >= len(self.coordinates) - self.config.tail:
@@ -105,8 +147,22 @@ class Session:
                 "denoiser_calls": self.counts["actual"] + self.counts["forecast"],
                 "outer_steps": self.step, "peak_history_bytes": self.peak_history_bytes,
                 "bootstrap_forecast": self.counts["bootstrap"],
+                "pece_corrector_calls": self.counts["pece_correction"],
+                "pece_corrector_evaluations": self.counts["pece_correction_native"],
+                "sa_ephemeral_forecasts": self.counts["sa_ephemeral_forecast"],
+                "sa_dense_outputs": self.counts["sa_dense_output"],
+                "sa_dense_modes": {"hold": self.counts["sa_dense_hold"],
+                                   "guard_hold": self.counts["sa_dense_guard_hold"],
+                                   "extrapolation": self.counts["sa_dense_extrapolation"],
+                                   "soft_extrapolation": self.counts["sa_dense_soft_extrapolation"]},
+                "sa_dense_steps": list(self.sa_dense_steps),
+                "sa_pece_forecast_policy": self.config.sa_pece_forecast_policy,
+                "sa_pece_skipped_predictions": self.counts["pece_solver_skip"],
                 "effective_config": {"preset": self.config.preset, "warmup": self.config.warmup,
                                      "tail": self.config.tail, "window": self.config.window,
                                      "degree": self.config.degree,
-                                     "bootstrap": self.config.bootstrap_active},
-                "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons)}
+                                     "bootstrap": self.config.bootstrap_active,
+                                     "extrapolation_guard_enabled": self.config.extrapolation_guard_enabled,
+                                     "max_extrapolation_span_ratio": self.config.max_extrapolation_span_ratio},
+                "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons),
+                "native_only": self.native_only}
