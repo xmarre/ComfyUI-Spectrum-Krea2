@@ -131,6 +131,8 @@ class QualifiedPatches:
     kj_preview_code: object = None
     verified_wrappers: tuple = ()
     diffaid_window: DiffAidWindow | None = None
+    # Diff-Aid config object admitted with its owner, full window included.
+    diffaid_config: object = None
 
     def diffaid_regime(self, options, x):
         """Diff-Aid gain of the NEXT evaluation; None while it cannot change."""
@@ -337,6 +339,7 @@ def qualify(model_options):
         type(kj_preview).__call__ if kj_preview is not None else None,
         getattr(type(kj_preview).__call__, "__code__", None) if kj_preview is not None else None,
         frozen, diffaid_window,
+        config if (diffaid_patch is not None or diffaid_wrapper is not None) else None,
     ), None
 
 
@@ -364,6 +367,10 @@ def matches(policy, trans):
             patches["attn1_patch"][0] is not policy.diffaid_patch):
         return False
     if policy.sol_override is not None and trans.get("optimized_attention_override") is not policy.sol_override:
+        return False
+    diffaid_owner = policy.diffaid_patch if policy.diffaid_patch is not None else policy.diffaid_wrapper
+    if diffaid_owner is not None and getattr(diffaid_owner, "config", None) is not policy.diffaid_config:
+        # A replaced config (e.g. full window -> partial) was never qualified.
         return False
     if (policy.kj_preview_wrapper is not None and
             (type(policy.kj_preview_wrapper).__call__ is not policy.kj_preview_method or

@@ -96,7 +96,7 @@ class Owner:
         return out[0] if not self.split else out[1]+self.cfg*(out[0]-out[1])
 
 
-def run(model, config=None, steps=12, split=False, sigmas=None, options=None, callback=None,sampler_name='sample_euler',sampler_options=None):
+def run(model, config=None, steps=12, split=False, sigmas=None, options=None, callback=None,sampler_name='sample_euler',sampler_options=None,wrapped=True,conds=None):
     from comfy.samplers import KSAMPLER
     from comfy.k_diffusion import sampling
     from comfy.patcher_extension import WrapperExecutor
@@ -104,9 +104,13 @@ def run(model, config=None, steps=12, split=False, sigmas=None, options=None, ca
     x,t,context=inputs(model)
     options=options or {}
     owner=Owner(model,binding,options,context,split)
+    if conds is not None:
+        owner.conds=conds
     sampler=KSAMPLER(getattr(sampling,sampler_name),extra_options=sampler_options or {})
     sigmas=torch.linspace(1.,0.,steps+1) if sigmas is None else sigmas
-    executor=WrapperExecutor.new_class_executor(sampler.sample,sampler,[binding.sampler])
+    # Unwrapped: plain native KSAMPLER; the model wrappers pass through with
+    # no active Spectrum session.
+    executor=WrapperExecutor.new_class_executor(sampler.sample,sampler,[binding.sampler] if wrapped else [])
     reports=[]
     token=REPORTS.set(reports)
     try:
@@ -114,7 +118,7 @@ def run(model, config=None, steps=12, split=False, sigmas=None, options=None, ca
             result=executor.execute(owner,sigmas,{'model_options':{'transformer_options':options}},callback,x,torch.zeros_like(x))
     finally:
         REPORTS.reset(token)
-    return result,reports[0]
+    return result,(reports[0] if reports else None)
 
 
 def test_unnamed_solver_callable_falls_back_to_native(native):
@@ -674,8 +678,9 @@ def test_er_sde_native_stochastic_history_and_ode_options(native):
         assert second['actual'] == report['actual']
         assert second['forecast'] == report['forecast']
         torch.manual_seed(123456)
-        original, _ = run(model, Config(window=0), steps=20, sampler_name='sample_er_sde',
-                          sampler_options=opts)
+        original, unwrapped = run(model, Config(window=0), steps=20, sampler_name='sample_er_sde',
+                                  sampler_options=opts, wrapped=False)
+        assert unwrapped is None  # no Spectrum session took part
         torch.manual_seed(123456)
         native_path, native_report = run(model, Config(window=0), steps=20,
                                         sampler_name='sample_er_sde', sampler_options=opts)
@@ -960,10 +965,10 @@ def test_diffaid_window_transition_starts_fresh_forecast_history(native, monkeyp
     assert served[2]
     if transition is None:
         assert 'Diff-Aid sigma-window transition' not in session.reasons
-        assert session.diffaid_regime_start == 0
+        assert session.anchor_regime_start == 0
     else:
         assert session.reasons['Diff-Aid sigma-window transition'] == 1
-        assert session.diffaid_regime_start == transition
+        assert session.anchor_regime_start == transition
     assert not model.last._forward_pre_hooks
 
 
@@ -992,7 +997,7 @@ def test_diffaid_window_transition_blocks_sa_pece_solver_skip(native, monkeypatc
             assert not session.served_forecast and session.counts['pece_solver_skip'] == 1
             assert session.counts['actual'] == actual + 1
             torch.testing.assert_close(out, expected, atol=0, rtol=0)
-            assert session.diffaid_regime == (1.0,) and session.diffaid_regime_start == 2
+            assert session.diffaid_regime == (1.0,) and session.anchor_regime_start == 2
             # A gain change after another branch was already skipped cannot be
             # reconciled; it fails loudly instead of mixing operators.
             session.active_step, session.served_forecast = 3, True
@@ -1031,13 +1036,13 @@ def test_diffaid_sa_pece_window_transition_forces_all_split_cfg_branches_native(
             first_expected = model(x, timestep, context)
             first_got = call(model, binding, x, timestep, context, options=new_first)
             torch.testing.assert_close(first_got, first_expected, atol=0, rtol=0)
-            assert session.diffaid_force_native_step == 1
+            assert session.force_native_step == 1
             second_got = call(model, binding, x, timestep, context, options=new_second)
             torch.testing.assert_close(second_got, first_expected, atol=0, rtol=0)
             assert session.counts['actual'] == 4
             assert session.counts['pece_solver_skip'] == 0
             assert not session.served_forecast
-            assert session.diffaid_regime_start == 1
+            assert session.anchor_regime_start == 1
 
             # The native-only decision is step-scoped; the following stable
             # step may again use the solver-owned predicted-phase skip.
@@ -1069,17 +1074,17 @@ def test_diffaid_transition_on_new_stream_resets_global_dense_history(native, mo
         with torch.no_grad():
             session.active_step = 0
             call(model, binding, x, timestep, context, options=first)
-            assert session.diffaid_regime_start == 0
+            assert session.anchor_regime_start == 0
             session.active_step = 2
             call(model, binding, x, timestep, context, options=second)
-            assert session.diffaid_regime_start == 2
+            assert session.anchor_regime_start == 2
             assert session.reasons['Diff-Aid sigma-window transition'] == 1
     finally:
         CURRENT.reset(token)
     assert not model.last._forward_pre_hooks
 
 
-def test_returning_stream_is_actual_at_a_diffaid_regime_start(native, monkeypatch):
+def test_returning_stream_is_actual_at_a_anchor_regime_start(native, monkeypatch):
     # A stream whose retained gain already equals the new gain (it was not
     # evaluated during a short window) must still be actual at the step where
     # another stream started the new regime.
@@ -1106,9 +1111,91 @@ def test_returning_stream_is_actual_at_a_diffaid_regime_start(native, monkeypatc
             session.active_step = 2
             before = session.counts['forecast']
             call(model, binding, x, t, context, options=opts(1, 0.75))
-            assert session.diffaid_regime_start == 2
+            assert session.anchor_regime_start == 2
             assert session.counts['forecast'] == before
             assert returning.last_actual == 2
             assert session.reasons['Diff-Aid sigma-window transition'] == 1
     finally:
         CURRENT.reset(token)
+
+
+class _RoutePolicy:
+    """Patch policy stub predicting a dense first evaluation, then Sol."""
+    diffaid_window = None
+
+    def __init__(self, session):
+        self.session = session
+
+    def diffaid_regime(self, options, x):
+        return None
+
+    def phase(self, x, context, refs, inner):
+        return "dense" if self.session.counts["actual"] == 0 else "sol"
+
+    def sol_status(self):
+        count = self.session.counts["actual"]
+        return {"actual_evaluations": count, "sparse_calls": max(0, count - 1)}
+
+
+def test_sa_pece_skip_is_actual_at_an_attention_route_transition(native, monkeypatch):
+    import comfyui_spectrum_krea2.adapter as adapter
+    model = tiny_model(native[0])
+    x, t, context = inputs(model)
+    binding, session = setup_session(model, x, Config(preset='turbo', warmup=2, tail=1, bootstrap=False))
+    monkeypatch.setattr(adapter, 'matches', lambda policy, options: True)
+    session.patch_policy = _RoutePolicy(session)
+    token = CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            session.active_step = 0
+            call(model, binding, x, t, context)
+            assert session.attention_route == "dense"
+            # max_speed-style skip at the first sparse step: must run natively.
+            session.active_step, session.solver_skip, session.served_forecast = 1, True, False
+            expected = model(x, t, context)
+            out = call(model, binding, x, t, context)
+            torch.testing.assert_close(out, expected, atol=0, rtol=0)
+            assert not session.served_forecast and session.counts['pece_solver_skip'] == 0
+            assert session.attention_route == "sol" and session.anchor_regime_start == 1
+            # Same route afterwards: the skip proceeds.
+            session.active_step, session.served_forecast = 2, False
+            out = call(model, binding, x, t, context)
+            assert session.served_forecast and session.counts['pece_solver_skip'] == 1
+            assert torch.count_nonzero(out) == 0
+            assert session.disabled_reason is None
+    finally:
+        session.solver_skip = False
+        CURRENT.reset(token)
+
+
+def test_model_function_wrapper_replacement_disables_forecasting(native):
+    model = tiny_model(native[0])
+    x, t, context = inputs(model)
+    binding, session = setup_session(model, x)
+    admitted = object()
+    session.model_function_wrapper = admitted
+    executor = lambda x, t, model_options, seed: x
+    token = CURRENT.set(session)
+    try:
+        session.step = 0
+        binding.predict(executor, x, t, {"model_function_wrapper": admitted})
+        assert session.disabled_reason is None
+        session.step, session.predict_calls = 1, 0
+        binding.predict(executor, x, t, {"model_function_wrapper": object()})
+        assert session.disabled_reason == "model function wrapper changed during sampling"
+    finally:
+        CURRENT.reset(token)
+
+
+@pytest.mark.parametrize('key', ['timestep_start', 'timestep_end'])
+def test_sa_solver_with_timestep_ranged_conditioning_falls_back(native, key):
+    model = tiny_model(native[0])
+    cfg = Config(preset='turbo', warmup=2, tail=1, bootstrap=False, extrapolation_guard_enabled=False)
+    conds = {'positive': [{key: 0.5}], 'negative': []}
+    _, report = run(model, cfg, steps=12, sampler_name='sample_sa_solver', conds=conds,
+                    sampler_options={'tau_func': lambda sigma: .6, 's_noise': .5})
+    assert report['fallback'] == "timestep-ranged conditioning is not forecast-enabled with SA-Solver"
+    assert report['forecast'] == 0
+    # Other solvers key forecast history by conditioning identity and keep forecasting.
+    _, euler = run(model, cfg, steps=12, sampler_name='sample_euler', conds=conds)
+    assert euler['fallback'] is None and euler['forecast'] > 0

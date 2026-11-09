@@ -214,8 +214,12 @@ def main():
     def make_kj_preview(source_root=None):
         """Load a genuine KJNodes callback source with preview I/O suppressed."""
         source_root = source_root or args.kj_root
-        # Keep distinct real source versions in distinct registered modules.
-        package_name = "kj_preview_" + source_root.name.lstrip("_").replace("-", "_")
+        # Keep distinct real source versions in distinct registered modules,
+        # keyed by resolved path so roots sharing a basename stay distinct.
+        import hashlib
+        resolved = str(source_root.resolve())
+        package_name = ("kj_preview_" + source_root.name.lstrip("_").replace("-", "_") + "_"
+                        + hashlib.sha1(resolved.encode()).hexdigest()[:12])
         module_name = package_name + ".preview_override_node"
         existing = sys.modules.get(module_name)
         if existing is not None:

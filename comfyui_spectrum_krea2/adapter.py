@@ -82,7 +82,7 @@ def enter_diffaid_regime(session, stream, options, x, step):
         # The SA solver's dense-output anchors are global, not per stream.
         # A new conditioning stream at the window boundary still requires
         # invalidating the old regime's dense-output anchors.
-        session.diffaid_regime_start = max(session.diffaid_regime_start, step)
+        session.anchor_regime_start = max(session.anchor_regime_start, step)
         session.reason("Diff-Aid sigma-window transition")
     stream.diffaid_regime = regime
     session.diffaid_regime = regime
@@ -134,18 +134,25 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         reason = call_contract(session, inner, x, context, ref_latents, options, kwargs)
         if session.weight_owner.current_weight_patches_uuid != session.weight_identity:
             reason = "active weight patches changed"
+        skip_phase = "native"
         if reason is None and session.patch_policy is not None:
-            if session.patch_policy.phase(x, context, ref_latents, inner) is None:
+            skip_phase = session.patch_policy.phase(x, context, ref_latents, inner)
+            if skip_phase is None:
                 reason = "qualified Sol-Krea2 sampling scope was lost"
         regime_changed = False
+        transition = "Diff-Aid sigma-window transition"
         if reason is None:
             regime_changed, reason = diffaid_skip_transition(session, options, x)
+        if (reason is None and not regime_changed and session.attention_route is not None
+                and skip_phase != session.attention_route):
+            # The skip would extrapolate anchors evaluated under another
+            # attention backend, e.g. the first sparse step after Sol's dense
+            # warmup. The first evaluation of the new route must be actual.
+            regime_changed, transition = True, "numerical attention backend transition"
         if regime_changed and session.served_forecast:
             # A prior CFG branch at this step already emitted a placeholder.
             # It cannot be undone, so refuse a mixed skipped/native result.
-            raise RuntimeError(
-                "SA-PECE partial predicted-phase skip: Diff-Aid sigma-window transition"
-            )
+            raise RuntimeError("SA-PECE partial predicted-phase skip: " + transition)
         if reason:
             # One CFG branch may already have been skipped. We cannot undo
             # its placeholder, so abort rather than mix skipped/native branch
@@ -161,8 +168,8 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
             # evaluate the real model. After the first branch the session-wide
             # regime already equals the new gain; checking only that value
             # would otherwise skip subsequent branches.
-            session.diffaid_force_native_step = session.active_step
-        if session.diffaid_force_native_step != session.active_step:
+            session.force_native_step = session.active_step
+        if session.force_native_step != session.active_step:
             # Active-PECE predicted phase is owned by the solver: the adapter
             # will replace this placeholder with exact-correction-anchor output.
             session.counts["forecast"] += 1
@@ -197,6 +204,10 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         stream.last_actual = -1
         stream.actual_anchors = 0
         session.reason("numerical attention backend transition")
+    if (session.attention_route is not None and session.attention_route != phase
+            or planned_transition):
+        # SA dense-output anchors are shared by all streams.
+        session.anchor_regime_start = max(session.anchor_regime_start, step)
     if stream.last_step >= step:
         stream.history.clear()
         session.reason("repeated branch evaluation at one outer step")
@@ -206,10 +217,10 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         session.disable(str(exc))
         return native()
     mode = session.forecast_mode(stream)
-    if step > 0 and (session.diffaid_regime_start == step or
-                     session.diffaid_force_native_step == step):
-        # Every branch at the first step of a Diff-Aid regime is actual, also
-        # a stream whose retained gain already matches: solver dense output
+    if step > 0 and (session.anchor_regime_start == step or
+                     session.force_native_step == step):
+        # Every branch at the first step of a regime is actual, also a stream
+        # whose retained gain or route already matches: solver dense output
         # needs an actual anchor evaluated in the current regime.
         mode = None
     if mode is not None:
@@ -285,7 +296,10 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         stream.last_actual = -1
         stream.actual_anchors = 0
         session.reason("numerical attention route differed from the previous anchor")
+        if not session.served_forecast:
+            session.anchor_regime_start = max(session.anchor_regime_start, step)
     stream.route = realized
+    session.attention_route = realized
     if len(captured) == 1 and not capture_error:
         try:
             session.observe(stream, captured[0])

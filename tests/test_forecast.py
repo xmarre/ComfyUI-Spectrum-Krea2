@@ -1,4 +1,5 @@
 import dataclasses
+import math
 import pytest
 import torch
 from comfyui_spectrum_krea2.config import Config
@@ -165,3 +166,20 @@ def test_disabled_extrapolation_guard_retains_other_numerical_bounds():
 
     with pytest.raises(ForecastUnavailable, match='inside the sampling domain'):
         unstable.predict(1.01, 'cpu', torch.float32)
+
+
+@pytest.mark.parametrize('target, accepted', [
+    (0.5 - 1e-6, True),
+    (0.5, True),
+    (0.5 + 1e-12, True),   # the comparison tolerance
+    (math.nextafter(0.5 + 1e-12, math.inf), False),
+])
+def test_extrapolation_guard_tolerance_boundary(target, accepted):
+    history = History(Config())  # default ratio 0.5
+    for x in (-1., 0.):
+        history.observe(x, torch.ones(1, 4, 8))
+    if accepted:
+        assert torch.isfinite(history.predict(target, 'cpu', torch.float32)).all()
+    else:
+        with pytest.raises(ForecastUnavailable, match='extrapolation exceeds'):
+            history.predict(target, 'cpu', torch.float32)

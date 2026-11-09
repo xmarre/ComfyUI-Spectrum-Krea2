@@ -217,6 +217,13 @@ class Binding:
             sa_options.get("corrector_order", 4) if session.pece_enabled else 0
         )
         session.pece_sigmas = tuple(values[:-1]) if session.pece_enabled else ()
+        if is_sa and any(
+                cond.get("timestep_start") is not None or cond.get("timestep_end") is not None
+                for conds in model_wrap.conds.values() for cond in conds or []):
+            # A condition entering or leaving mid-trajectory changes the
+            # model between SA's shared actual anchors and a dense output.
+            reason = reason or "timestep-ranged conditioning is not forecast-enabled with SA-Solver"
+        session.model_function_wrapper = extra_args.get("model_options", {}).get("model_function_wrapper")
         from .qualified_patches import qualify
         session.patch_policy, _ = qualify(extra_args.get("model_options", {}))
         if reason:
@@ -279,6 +286,10 @@ class Binding:
         session = CURRENT.get()
         if session is None or session.binding is not self:
             return executor(x, timestep, model_options or {}, seed)
+        if ((model_options or {}).get("model_function_wrapper") is not session.model_function_wrapper
+                and session.disabled_reason is None):
+            # Qualification covered the wrapper present at sampler entry.
+            session.disable("model function wrapper changed during sampling")
         if session.pece_pending_step is not None:
             step = session.pece_pending_step
             target = session.pece_sigmas[step]

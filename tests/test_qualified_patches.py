@@ -366,3 +366,14 @@ def test_diffaid_regime_keeps_genuine_per_row_differences(providers):
     policy, _ = qualify(opts)
     x = torch.zeros(2, 16, 2, 2)
     assert policy.diffaid_regime(_state(torch.tensor([0.9, 0.5])), x) == (0.0, 1.0)
+
+
+@pytest.mark.parametrize("residual", [False, True])
+def test_replaced_full_window_diffaid_config_fails_matches(providers, residual):
+    opts = model_options(providers, sol=False, residual=residual)
+    trans = opts["transformer_options"]
+    policy, reason = qualify(opts)
+    assert reason is None and policy.diffaid_window is None and matches(policy, trans)
+    owner = policy.diffaid_wrapper if residual else policy.diffaid_patch
+    owner.config = SimpleNamespace(sigma_start=0.0, sigma_end=0.5, sigma_ramp=0.0)
+    assert not matches(policy, trans)

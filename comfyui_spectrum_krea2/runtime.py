@@ -57,16 +57,21 @@ class Session:
     # Set by the SA PECE adapter for a predicted phase the solver will not consume.
     solver_skip: bool = False
     sa_dense_steps: list = field(default_factory=list)
-    # First outer step of the current Diff-Aid sigma-window regime. Solver
-    # dense outputs must not extrapolate across a modulation change.
-    diffaid_regime_start: int = 0
+    # First outer step of the current numerical regime: a Diff-Aid gain or a
+    # planned Sol attention route. Solver dense outputs must not extrapolate
+    # across a change of the evaluated operator.
+    anchor_regime_start: int = 0
     # Diff-Aid gain of the latest actual evaluation of any stream. The gain
     # depends only on the evaluation sigma, so it is shared by all branches.
     diffaid_regime: object = UNOBSERVED
-    # An SA-PECE gain boundary forces ALL separately evaluated CFG branches
-    # of this predicted phase to be actual. A session-wide gain changes after
+    # An SA-PECE regime boundary forces ALL separately evaluated CFG branches
+    # of this predicted phase to be actual. A session-wide record changes after
     # the first branch, so comparing it alone would skip later branches.
-    diffaid_force_native_step: int | None = None
+    force_native_step: int | None = None
+    # Attention route (native, dense or sol) of the latest actual evaluation.
+    attention_route: str | None = None
+    # model_function_wrapper qualified at sampler entry.
+    model_function_wrapper: object = None
 
     def disable(self, reason):
         if self.disabled_reason is None:

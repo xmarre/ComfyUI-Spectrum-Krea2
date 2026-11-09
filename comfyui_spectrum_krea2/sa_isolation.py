@@ -70,6 +70,7 @@ def causal_denoised(values, lambdas, steps, target_lambda, allow_consecutive=Fal
     return torch.lerp(latest, previous, -weight), mode
 
 
+@torch.no_grad()
 def sample_sa_solver_isolated(session, model, x, sigmas, extra_args=None, callback=None,
                               disable=False, tau_func=None, s_noise=1.0, noise_sampler=None,
                               predictor_order=3, corrector_order=4, use_pece=False,
@@ -122,12 +123,12 @@ def sample_sa_solver_isolated(session, model, x, sigmas, extra_args=None, callba
             if actual_preds and (accelerated or (tau_t > 0 and s_noise > 0)):
                 # Stochastic input: x_pred holds a fresh increment the forecast
                 # could not see. Accelerated PECE: the solver owns this value.
-                # Only anchors evaluated under the current Diff-Aid gain may
-                # define it; a forecast is served only inside that regime.
-                start = session.diffaid_regime_start
+                # Only anchors evaluated under the current numerical regime
+                # (Diff-Aid gain and attention route) may define it.
+                start = session.anchor_regime_start
                 keep = [k for k, s in enumerate(actual_steps) if s >= start]
                 if not keep:
-                    raise RuntimeError("SA dense output has no actual anchor in the current Diff-Aid regime")
+                    raise RuntimeError("SA dense output has no actual anchor in the current numerical regime")
                 regime_steps = [actual_steps[k] for k in keep]
                 denoised, mode = causal_denoised([actual_preds[k] for k in keep],
                                                  [actual_lambdas[k] for k in keep],
