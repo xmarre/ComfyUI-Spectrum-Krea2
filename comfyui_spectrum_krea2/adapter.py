@@ -178,7 +178,26 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
             return torch.zeros_like(x)
     inner = executor.class_obj
     if session.disabled_reason or session.active_step is None:
-        return native()
+        if session.correction_step is None or session.disabled_reason or session.patch_policy is None:
+            return native()
+        # A native PECE correction replaces its step's anchor in SA history.
+        # Track the route it realizes so dense output never mixes routes.
+        before_sol = session.patch_policy.sol_status()
+        output = native()
+        after_sol = session.patch_policy.sol_status()
+        if before_sol is None:
+            realized = "native"
+        elif (after_sol is None or
+                after_sol["actual_evaluations"] != before_sol["actual_evaluations"] + 1):
+            session.disable("Sol-Krea2 native execution was not witnessed")
+            return output
+        else:
+            realized = "sol" if after_sol["sparse_calls"] > before_sol["sparse_calls"] else "dense"
+        if session.attention_route is not None and realized != session.attention_route:
+            session.anchor_regime_start = max(session.anchor_regime_start, session.correction_step)
+            session.reason("numerical attention backend transition")
+        session.attention_route = realized
+        return output
     reason = call_contract(session, inner, x, context, ref_latents, options, kwargs)
     # Weight identity is read from the active native BaseModel, never a stale clone.
     # The parent is supplied by the sampler rather than modifying the model object.

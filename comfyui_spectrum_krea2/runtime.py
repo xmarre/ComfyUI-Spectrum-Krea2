@@ -68,8 +68,11 @@ class Session:
     # of this predicted phase to be actual. A session-wide record changes after
     # the first branch, so comparing it alone would skip later branches.
     force_native_step: int | None = None
-    # Attention route (native, dense or sol) of the latest actual evaluation.
+    # Attention route (native, dense or sol) of the latest actual evaluation,
+    # PECE corrections included.
     attention_route: str | None = None
+    # Outer step a native PECE correction is evaluating, else None.
+    correction_step: int | None = None
     # model_function_wrapper qualified at sampler entry.
     model_function_wrapper: object = None
 

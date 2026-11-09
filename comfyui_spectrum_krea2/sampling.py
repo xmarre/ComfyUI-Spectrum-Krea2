@@ -308,6 +308,7 @@ class Binding:
                 # Keep CURRENT so actual evaluation counters remain accurate.
                 prior = session.active_step
                 session.active_step = None
+                session.correction_step = step
                 session.counts["pece_correction"] += 1
                 actual_before = session.counts["actual"]
                 try:
@@ -317,6 +318,7 @@ class Binding:
                         session.counts["actual"] - actual_before
                     )
                     session.active_step = prior
+                    session.correction_step = None
             session.disable("PECE correction sigma/order mismatch")
         session.predict_calls += 1
         if session.predict_calls != 1 or session.step >= len(session.coordinates):

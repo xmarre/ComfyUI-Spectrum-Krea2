@@ -1199,3 +1199,40 @@ def test_sa_solver_with_timestep_ranged_conditioning_falls_back(native, key):
     # Other solvers key forecast history by conditioning identity and keep forecasting.
     _, euler = run(model, cfg, steps=12, sampler_name='sample_euler', conds=conds)
     assert euler['fallback'] is None and euler['forecast'] > 0
+
+
+def test_pece_correction_route_change_starts_a_new_anchor_regime(native, monkeypatch):
+    # A native PECE correction replaces its step's anchor. If it realizes a
+    # different Sol route than the predictor anchors, older anchors must not
+    # feed SA dense output, and the next skip must not assume the old route.
+    import comfyui_spectrum_krea2.adapter as adapter
+    model = tiny_model(native[0])
+    x, t, context = inputs(model)
+    binding, session = setup_session(model, x, Config(preset='turbo', warmup=2, tail=1, bootstrap=False))
+    monkeypatch.setattr(adapter, 'matches', lambda policy, options: True)
+    class Policy(_RoutePolicy):
+        def phase(self, x, context, refs, inner):
+            return "dense"
+
+        def sol_status(self):
+            # Predictors 0 and 1 run dense; the third actual (the step-1
+            # correction) runs sparse.
+            count = self.session.counts["actual"]
+            return {"actual_evaluations": count, "sparse_calls": max(0, count - 2)}
+
+    session.patch_policy = Policy(session)
+    token = CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            for step in (0, 1):
+                session.active_step = step
+                call(model, binding, x, t, context)
+            assert session.attention_route == "dense" and session.anchor_regime_start == 0
+            session.active_step, session.correction_step = None, 1
+            call(model, binding, x, t, context)
+            session.correction_step = None
+            assert session.attention_route == "sol"
+            assert session.anchor_regime_start == 1
+            assert session.disabled_reason is None
+    finally:
+        CURRENT.reset(token)
