@@ -1077,3 +1077,38 @@ def test_diffaid_transition_on_new_stream_resets_global_dense_history(native, mo
     finally:
         CURRENT.reset(token)
     assert not model.last._forward_pre_hooks
+
+
+def test_returning_stream_is_actual_at_a_diffaid_regime_start(native, monkeypatch):
+    # A stream whose retained gain already equals the new gain (it was not
+    # evaluated during a short window) must still be actual at the step where
+    # another stream started the new regime.
+    import comfyui_spectrum_krea2.adapter as adapter
+    model = tiny_model(native[0])
+    x, t, context = inputs(model)
+    binding, session = setup_session(model, x, Config(preset='turbo', warmup=2, tail=1, bootstrap=False,
+                                                      extrapolation_guard_enabled=False))
+    monkeypatch.setattr(adapter, 'matches', lambda policy, options: True)
+    session.patch_policy = _diffaid_policy((0.0, 0.6, 0.0))
+    def opts(uuid_int, value):
+        o = _diffaid_options(value)
+        o['uuids'] = [uuid.UUID(int=uuid_int)]
+        return o
+    token = CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            for step, value in enumerate((0.95, 0.85)):
+                session.active_step = step
+                call(model, binding, x, t, context, options=opts(1, value))
+            returning = session.streams[next(iter(session.streams))]
+            # Another stream runs inside a different gain, then the window closes.
+            session.diffaid_regime = (1.0,)
+            session.active_step = 2
+            before = session.counts['forecast']
+            call(model, binding, x, t, context, options=opts(1, 0.75))
+            assert session.diffaid_regime_start == 2
+            assert session.counts['forecast'] == before
+            assert returning.last_actual == 2
+            assert session.reasons['Diff-Aid sigma-window transition'] == 1
+    finally:
+        CURRENT.reset(token)

@@ -117,8 +117,8 @@ When supported, the preview callback remains active through both Krea 2 Scale-Lo
 ### Scale-Locked Krea 2 sampler compatibility
 
 **SA-Solver native-only diagnostic.** The paired Krea 2 Scale-Locked node
-has an optional `sa_spectrum_forecasts` switch, off by default pending
-full-checkpoint image-quality validation. When disabled, an invocation-local
+has an optional `sa_spectrum_forecasts` switch, on by default. Set it to
+`false` for a native-only quality reference. When disabled, an invocation-local
 context flag makes Spectrum evaluate **every** SA predictor and PECE correction
 with the genuine native denoiser, while leaving model/solver patches and
 stochastic noise unchanged. Native-only does not install Spectrum

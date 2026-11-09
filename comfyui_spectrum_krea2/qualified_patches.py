@@ -105,7 +105,9 @@ class DiffAidWindow:
         values = tuple(float(v) for v in gain.reshape(-1).tolist())
         if len(values) != x.shape[0] or not all(math.isfinite(v) for v in values):
             raise DiffAidGainUnavailable("Diff-Aid sigma-window gain is malformed")
-        return values
+        # Conditioning groups pack different batch sizes. Equal per-row gains
+        # are one regime regardless of packing; keep genuine per-row differences.
+        return values if len(set(values)) > 1 else values[:1]
 
 
 def _diffaid_gain_contract(owner, config, window):

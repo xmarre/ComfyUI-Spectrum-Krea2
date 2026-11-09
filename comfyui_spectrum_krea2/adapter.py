@@ -206,6 +206,12 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         session.disable(str(exc))
         return native()
     mode = session.forecast_mode(stream)
+    if step > 0 and (session.diffaid_regime_start == step or
+                     session.diffaid_force_native_step == step):
+        # Every branch at the first step of a Diff-Aid regime is actual, also
+        # a stream whose retained gain already matches: solver dense output
+        # needs an actual anchor evaluated in the current regime.
+        mode = None
     if mode is not None:
         prediction = None
         try:

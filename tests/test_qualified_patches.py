@@ -187,7 +187,9 @@ def test_partial_diffaid_window_qualifies_with_diffaid_gain(providers, residual,
     for value in (1.0, 0.95, 0.9, 0.75, 0.5, 0.15, 0.05, 0.0):
         expected = diffaid_reference._sigma_window_gain(
             torch.tensor([value, value]), *window).tolist()
-        assert list(policy.diffaid_regime(_state(torch.tensor([value])), x)) == expected
+        # Equal per-row gains collapse to one regime value.
+        assert list(policy.diffaid_regime(_state(torch.tensor([value])), x)) == expected[:1]
+        assert policy.diffaid_regime(_state(torch.tensor([value])), x[:1]) == tuple(expected[:1])
     assert matches(policy, trans)
 
 
@@ -356,3 +358,11 @@ def test_kj_preview_unverified_or_malformed_still_falls_back(providers):
     wraps["outer_sample"]["kj_preview_override"] = []
     policy, reason = qualify(opts)
     assert policy is None and reason == "invalid KJ PreviewOverride wrapper registration"
+
+
+def test_diffaid_regime_keeps_genuine_per_row_differences(providers):
+    opts = model_options(providers, sol=False)
+    opts["transformer_options"]["patches"]["attn1_patch"][0].config.sigma_end = 0.6
+    policy, _ = qualify(opts)
+    x = torch.zeros(2, 16, 2, 2)
+    assert policy.diffaid_regime(_state(torch.tensor([0.9, 0.5])), x) == (0.0, 1.0)
