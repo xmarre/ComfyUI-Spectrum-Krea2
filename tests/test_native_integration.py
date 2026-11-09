@@ -1236,3 +1236,48 @@ def test_pece_correction_route_change_starts_a_new_anchor_regime(native, monkeyp
             assert session.disabled_reason is None
     finally:
         CURRENT.reset(token)
+
+
+def test_split_cfg_correction_with_mixed_routes_is_not_a_same_route_anchor(native, monkeypatch):
+    # Two CFG branches of one PECE correction realize different Sol routes
+    # (dense, then sparse). Their combined anchor belongs to neither regime:
+    # the next step starts a new regime and its solver-owned skip runs natively.
+    import comfyui_spectrum_krea2.adapter as adapter
+    model = tiny_model(native[0])
+    x, t, context = inputs(model)
+    binding, session = setup_session(model, x, Config(preset='turbo', warmup=2, tail=1, bootstrap=False))
+    monkeypatch.setattr(adapter, 'matches', lambda policy, options: True)
+
+    class Policy(_RoutePolicy):
+        def phase(self, x, context, refs, inner):
+            return "dense" if self.session.counts["actual"] < 3 else "sol"
+
+        def sol_status(self):
+            # Actuals 1-3 run dense; the fourth (second correction branch) runs sparse.
+            count = self.session.counts["actual"]
+            return {"actual_evaluations": count, "sparse_calls": max(0, count - 3)}
+
+    session.patch_policy = Policy(session)
+    branch = lambda b: {'uuids': [uuid.UUID(int=b + 1)], 'cond_or_uncond': [b]}
+    token = CURRENT.set(session)
+    try:
+        with torch.no_grad():
+            for step in (0, 1):
+                session.active_step = step
+                call(model, binding, x, t, context, options=branch(0))
+            session.active_step, session.correction_step = None, 1
+            call(model, binding, x, t, context, options=branch(0))   # dense
+            call(model, binding, x, t, context + 1, options=branch(1))  # sparse
+            session.correction_step = None
+            assert session.attention_route == "sol"
+            assert session.anchor_regime_start == 2
+            assert session.reasons["mixed attention routes within one evaluation"] == 1
+            # Same route as the last branch, but the new regime has no actual
+            # anchor yet: the skip must run the model.
+            session.active_step, session.solver_skip, session.served_forecast = 2, True, False
+            call(model, binding, x, t, context, options=branch(0))
+            assert not session.served_forecast and session.counts['pece_solver_skip'] == 0
+            assert session.disabled_reason is None
+    finally:
+        session.solver_skip = False
+        CURRENT.reset(token)

@@ -88,6 +88,21 @@ def enter_diffaid_regime(session, stream, options, x, step):
     session.diffaid_regime = regime
 
 
+def note_route(session, step, kind, realized):
+    """Record a realized route; exclude a step whose branches mixed routes.
+
+    SA combines the CFG branches of one evaluation into a single anchor. If
+    the branches ran on different attention routes, that anchor belongs to
+    neither regime: the next step starts a new one and must be actual.
+    """
+    routes = session.step_routes.setdefault((step, kind), set())
+    routes.add(realized)
+    if len(routes) > 1:
+        session.anchor_regime_start = max(session.anchor_regime_start, step + 1)
+        session.reason("mixed attention routes within one evaluation")
+    session.attention_route = realized
+
+
 def project(inner, feature, timesteps, x):
     from comfy.ldm.flux.layers import timestep_embedding
     if not verified(timestep_embedding, "native.timestep_embedding"):
@@ -169,6 +184,11 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
             # regime already equals the new gain; checking only that value
             # would otherwise skip subsequent branches.
             session.force_native_step = session.active_step
+        if (session.active_step > 0 and session.anchor_regime_start == session.active_step
+                and session.force_native_step != session.active_step):
+            # A regime starting at this step (e.g. after a mixed-route
+            # anchor) needs an actual anchor before any skip.
+            session.force_native_step = session.active_step
         if session.force_native_step != session.active_step:
             # Active-PECE predicted phase is owned by the solver: the adapter
             # will replace this placeholder with exact-correction-anchor output.
@@ -196,7 +216,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         if session.attention_route is not None and realized != session.attention_route:
             session.anchor_regime_start = max(session.anchor_regime_start, session.correction_step)
             session.reason("numerical attention backend transition")
-        session.attention_route = realized
+        note_route(session, session.correction_step, "correction", realized)
         return output
     reason = call_contract(session, inner, x, context, ref_latents, options, kwargs)
     # Weight identity is read from the active native BaseModel, never a stale clone.
@@ -318,7 +338,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         if not session.served_forecast:
             session.anchor_regime_start = max(session.anchor_regime_start, step)
     stream.route = realized
-    session.attention_route = realized
+    note_route(session, step, "predictor", realized)
     if len(captured) == 1 and not capture_error:
         try:
             session.observe(stream, captured[0])

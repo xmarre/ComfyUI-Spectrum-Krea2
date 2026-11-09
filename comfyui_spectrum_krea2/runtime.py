@@ -73,6 +73,9 @@ class Session:
     attention_route: str | None = None
     # Outer step a native PECE correction is evaluating, else None.
     correction_step: int | None = None
+    # Routes realized by the branches of each (step, phase) evaluation. The
+    # solver combines branches into one anchor; a mixed set taints it.
+    step_routes: dict = field(default_factory=dict)
     # model_function_wrapper qualified at sampler entry.
     model_function_wrapper: object = None
 
