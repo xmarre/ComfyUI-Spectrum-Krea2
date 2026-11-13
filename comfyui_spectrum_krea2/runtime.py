@@ -15,6 +15,8 @@ REPORTS = contextvars.ContextVar("spectrum_krea2_reports", default=None)
 FORCE_NATIVE = contextvars.ContextVar("spectrum_krea2_force_native", default=False)
 # Diff-Aid regime of a stream before its first evaluation.
 UNOBSERVED = object()
+# Bound on the per-invocation Diff-Aid gain trace in the report.
+DIFFAID_GAIN_REPORT_LIMIT = 64
 
 
 @dataclass
@@ -78,6 +80,10 @@ class Session:
     step_routes: dict = field(default_factory=dict)
     # model_function_wrapper qualified at sampler entry.
     model_function_wrapper: object = None
+    # Denoiser sigma of every outer step, for diagnostics only.
+    sigmas: tuple = ()
+    # Diff-Aid sigma-window gain at its first evaluation and at every change.
+    diffaid_gains: list = field(default_factory=list)
 
     def disable(self, reason):
         if self.disabled_reason is None:
@@ -89,6 +95,13 @@ class Session:
         self.reasons[reason] += 1
         if self.config.debug and self.reasons[reason] == 1:
             LOG.info("Spectrum Krea 2: actual evaluation: %s", reason)
+
+    def note_diffaid_gain(self, step, gains):
+        if len(self.diffaid_gains) < DIFFAID_GAIN_REPORT_LIMIT:
+            self.diffaid_gains.append({
+                "step": step,
+                "sigma": self.sigmas[step] if step < len(self.sigmas) else None,
+                "gain": list(gains)})
 
     @property
     def nbytes(self):
@@ -165,4 +178,5 @@ class Session:
                                      "extrapolation_guard_enabled": self.config.extrapolation_guard_enabled,
                                      "max_extrapolation_span_ratio": self.config.max_extrapolation_span_ratio},
                 "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons),
+                "diffaid_gains": [dict(entry) for entry in self.diffaid_gains],
                 "native_only": self.native_only}

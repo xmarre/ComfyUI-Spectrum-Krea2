@@ -74,6 +74,8 @@ def enter_diffaid_regime(session, stream, options, x, step):
     regime = session.patch_policy.diffaid_regime(options, x) if session.patch_policy is not None else None
     stream_changed = stream.diffaid_regime is not UNOBSERVED and stream.diffaid_regime != regime
     global_changed = session.diffaid_regime is not UNOBSERVED and session.diffaid_regime != regime
+    if regime is not None and (global_changed or session.diffaid_regime is UNOBSERVED):
+        session.note_diffaid_gain(step, regime)
     if stream_changed:
         stream.history.clear()
         stream.last_actual = -1

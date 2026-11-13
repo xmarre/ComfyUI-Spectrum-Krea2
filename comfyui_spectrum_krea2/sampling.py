@@ -205,6 +205,7 @@ class Binding:
                           getattr(model_wrap.inner_model, "current_weight_patches_uuid", None),
                           noise.shape[0], tuple(noise.shape[-2:]))
         session.weight_owner = model_wrap.inner_model
+        session.sigmas = tuple(values[:-1])
         sa_options = executor.class_obj.extra_options
         is_sa = solver_name in ("sample_sa_solver", "sample_sa_solver_pece")
         # An unrelated nested Euler/ER-SDE sampler in the same context must
