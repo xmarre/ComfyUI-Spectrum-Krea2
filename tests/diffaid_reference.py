@@ -2,7 +2,7 @@
 # Copyright (c) 2026 xmarre
 """Diff-Aid sigma-window helpers, copied unchanged from ComfyUI-DiffAid-Patches.
 
-Source: xmarre/ComfyUI-DiffAid-Patches nodes.py at 99a0ca7 (the Krea 2 Diff-Aid
+Source: xmarre/ComfyUI-DiffAid-Patches nodes.py at 21c8e4a (the Krea 2 Diff-Aid
 revision exercised by CI). Spectrum binds these helpers from the installed
 Diff-Aid module at runtime; unit tests install this copy in a stand-in module.
 """

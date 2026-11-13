@@ -78,7 +78,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: xmarre/ComfyUI-DiffAid-Patches
-          ref: 99a0ca7670298244e13b084713b329a177cd6ab4
+          ref: 21c8e4aff58361ae88e5502995be17deeacd205a
           path: _diffaid
       - name: Check out audited KJNodes preview wrapper
         uses: actions/checkout@v4

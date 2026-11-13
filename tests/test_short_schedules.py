@@ -262,6 +262,7 @@ def test_window_on_absolute_noise_levels_keeps_one_gain_and_forecasts(
     # After it (at the tail step): the forecast was already served.
     ((0.5, 1.0, 0.0), 4, 'AAFA', [3]),
     ((0.5, 1.0, 0.3), 4, 'AAFA', [3]),
+    ((0.4, 1.0, 0.0), 5, 'AAFAA', [4]),
     # A wide ramp shoulder changes the gain at every step.
     ((0.9, 1.0, 0.4), 4, 'AAAA', [1, 2, 3]),
     ((0.9, 1.0, 0.4), 5, 'AAAAA', [1, 2, 3, 4]),

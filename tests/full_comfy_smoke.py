@@ -647,6 +647,126 @@ def main():
                 'spectrum_only_reference': True, 'steps': steps, **baseline,
             })
 
+        # Refinement passes: the trailing steps of the native 14- and 16-step
+        # Krea 2 ``simple`` schedules, sampled as their own sampler call with
+        # stochastic ER-SDE. The real Diff-Aid node normalizes its sigma window
+        # either against the first sigma of that call or against the model's
+        # maximum sigma. Only the latter keeps one gain over the whole pass.
+        import comfy.samplers
+
+        def simple_schedule(steps):
+            shift = math.exp(1.15)
+            values = []
+            for i in range(steps):
+                t = (10000 - int(i * (10000 / steps))) / 10000
+                values.append(shift * t / (1 - t + shift * t))
+            return torch.tensor(values + [0.], dtype=torch.float32)
+
+        def sample_pass(patcher, sigmas):
+            reports = []; token = REPORTS.set(reports)
+            sampler = comfy.samplers.ksampler('er_sde', {
+                'max_stage': 3, 's_noise': 1.0,
+                'noise_scaler': lambda x: x * ((x ** 0.3).exp() + 10.0)})
+            try:
+                with torch.inference_mode():
+                    result = comfy.sample.sample_custom(
+                        patcher, noise12, 1., sampler, sigmas, positive12, negative12,
+                        torch.zeros_like(noise12), disable_pbar=True, seed=42)
+            finally:
+                REPORTS.reset(token)
+            assert CURRENT.get() is None and CAPTURE.get() is None
+            assert not base12.diffusion_model.last._forward_pre_hooks
+            assert torch.isfinite(result).all()
+            return result, (reports[0] if reports else None)
+
+        def krea_diffaid(mode, window, **extra):
+            return diff.Krea2DiffAidSparsePatchNode().patch(
+                model12, enabled=True, block_preset='custom_block_indices',
+                block_indices='1', strength=.15, modulation_target=mode,
+                sigma_start=window[0], sigma_end=window[1], sigma_ramp=window[2],
+                token_weight_mode='none', token_tail=.35, cond_only=True, **extra)[0]
+
+        turbo = dict(preset='turbo', degree=1, warmup=2, tail=1, window=1,
+                     bootstrap=False, extrapolation_guard_enabled=False)
+        transition = 'Diff-Aid sigma-window transition'
+        for total, first in ((14, 10), (16, 11)):
+            pass_sigmas = simple_schedule(total)[first:]
+            steps = len(pass_sigmas) - 1
+            assert steps in (4, 5) and float(pass_sigmas[0]) < 0.6
+            for mode in ('text_residual', 'values_only'):
+                for window, inside in (((.75, 1., 0.), 0.), ((0., .75, 0.), 1.)):
+                    # The window's gain over this pass on absolute noise levels:
+                    # 0 is the unpatched model, 1 the full-window patch.
+                    same_operator = model12 if inside == 0. else krea_diffaid(mode, (0., 1., 0.))
+                    restarted = krea_diffaid(mode, window)
+                    absolute = krea_diffaid(mode, window, sigma_reference='model_sigma_max')
+
+                    _, report = sample_pass(node.apply(restarted, **turbo)[0], pass_sigmas)
+                    assert report['fallback'] is None, report
+                    assert (report['actual'], report['forecast']) == (steps, 0), report
+                    assert report['actual_reasons'] == {transition: 1}, report
+                    assert [(g['step'], g['gain']) for g in report['diffaid_gains']] == [
+                        (0, [1. - inside]), (2, [inside])], report
+                    records.append({'refinement_pass': steps, 'mode': mode, 'window': window,
+                                    'sigma_reference': 'schedule_start', **report})
+
+                    exact, report = sample_pass(node.apply(absolute, window=0)[0], pass_sigmas)
+                    assert report['fallback'] is None and report['forecast'] == 0, report
+                    native, _ = sample_pass(same_operator, pass_sigmas)
+                    # One constant gain: the patched model IS that fixed operator.
+                    torch.testing.assert_close(exact, native, atol=0, rtol=0)
+
+                    forecast, report = sample_pass(node.apply(absolute, **turbo)[0], pass_sigmas)
+                    assert report['fallback'] is None, report
+                    assert (report['actual'], report['forecast']) == (steps - 1, 1), report
+                    assert report['actual_reasons'] == {}, report
+                    assert [(g['step'], g['gain']) for g in report['diffaid_gains']] == [
+                        (0, [inside])], report
+                    reference, reference_report = sample_pass(
+                        node.apply(same_operator, **turbo)[0], pass_sigmas)
+                    assert (reference_report['actual'], reference_report['forecast']) == (steps - 1, 1)
+                    torch.testing.assert_close(forecast, reference, atol=0, rtol=0)
+                    repeated, _ = sample_pass(node.apply(absolute, **turbo)[0], pass_sigmas)
+                    torch.testing.assert_close(forecast, repeated, atol=0, rtol=0)
+                    assert not torch.equal(forecast, exact)
+                    records.append({'refinement_pass': steps, 'mode': mode, 'window': window,
+                                    'sigma_reference': 'model_sigma_max', **report})
+
+            # A full schedule starts at the model's maximum sigma: both
+            # references select the same steps and the same result.
+            full_sigmas = simple_schedule(total)
+            by_reference = [
+                sample_pass(node.apply(krea_diffaid('text_residual', (.75, 1., 0.), **extra), **turbo)[0],
+                            full_sigmas)
+                for extra in ({}, {'sigma_reference': 'model_sigma_max'})]
+            torch.testing.assert_close(by_reference[0][0], by_reference[1][0], atol=0, rtol=0)
+            assert by_reference[0][1] == by_reference[1][1]
+            assert by_reference[0][1]['actual_reasons'] == {transition: 1}
+            assert by_reference[0][1]['forecast'] > 0
+
+            # Sol's dense first evaluation is a different operator from its
+            # sparse ones: with the default dense_evaluations=1 a four-step
+            # pass keeps no forecast; dense_evaluations=0 keeps one.
+            for dense_evaluations, forecasts in ((1, 0 if steps == 4 else 1), (0, 1)):
+                with_sol = sol.install(
+                    krea_diffaid('text_residual', (.75, 1., 0.), sigma_reference='model_sigma_max'),
+                    sol.Settings(dense_evaluations=dense_evaluations, dense_layers=0, min_tokens=0))
+                QualifiedPatches.phase = cpu_oracle_phase
+                sol._can_sparse = eligible
+                sol.sol_attention = exact_cpu
+                try:
+                    _, report = sample_pass(node.apply(with_sol, **turbo)[0], pass_sigmas)
+                finally:
+                    QualifiedPatches.phase = original_phase
+                    sol._can_sparse = original_gate
+                    sol.sol_attention = original_attention
+                assert report['fallback'] is None, report
+                assert report['forecast'] == forecasts, report
+                assert report['actual_reasons'] == (
+                    {'numerical attention backend transition': 1} if dense_evaluations else {}), report
+                records.append({'refinement_pass': steps, 'sol_dense_evaluations': dense_evaluations,
+                                **report})
+
         if args.kj_root:
             # KJ + Sol + actual Krea Diff-Aid text residual + Spectrum + ER-SDE.
             # CPU executes dense fallback for the actual Sol kernel, but the
