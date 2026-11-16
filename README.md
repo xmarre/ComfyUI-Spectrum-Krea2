@@ -12,10 +12,10 @@ The audited ComfyUI revision is [`7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe`](htt
 
 ## Install and use
 
-1. Add `https://github.com/xmarre/ComfyUI-Spectrum-Krea2` in ComfyUI Patcher and apply the overlay for **[PR #1](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/1)**. Restart ComfyUI.
+1. Add `https://github.com/xmarre/ComfyUI-Spectrum-Krea2` in ComfyUI Patcher. The base Spectrum integration is on `main` (the original PR #1 was merged). For the experimental Sol-Krea2 and Diff-Aid interoperability described below, enable the **[PR #2](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/2)** overlay. Restart ComfyUI.
 2. Load a Krea 2 RAW or Turbo diffusion model, its compatible Qwen3-VL **4B / 12-layer-tap** text encoder with **CLIPLoader type `krea2`**, and a compatible Wan 2.1 VAE.
 3. Connect the final loader/LoRA `MODEL` to **Spectrum Apply Krea 2**, then connect its `MODEL` output to the usual KSampler. Select `raw` or `turbo` to match the weights.
-4. Start with **Euler**, **simple** scheduler, and the paired examples below. Compare native and Spectrum with identical seeds and all other inputs.
+4. Start with **Euler**, **simple** scheduler, and the paired examples below. Compare native and Spectrum with identical seeds and all other inputs. **DPM++ 2M**, **RES Multistep**, **Gradient Estimation**, **DEIS**, **iPNDM**, and **iPNDM-V** are also forecast-enabled when their source-audited deterministic native implementations are used with default options. **ER-SDE** and **SA-Solver** are supported through audited native stochastic solvers. **SA-Solver PECE** is predictor/corrector-aware: eligible predictor calls may forecast, while every corrected-state evaluation is retained as a native model call after the outer-step callback. SA-Solver's stochastic window, predictor/corrector order, noise strength and simplified-order-2 options are validated. CFG++ and unreviewed solver overrides are not included.
 
 Disabling the node on an ordinary model returns the original MODEL unchanged. Reapplying the node replaces its own wrappers on a clone. Disabling a previously Spectrum-patched clone removes its Spectrum wrappers and preserves other wrappers.
 
@@ -33,7 +33,10 @@ RAW and Turbo have the same native class and no verified distillation flag. Prof
 | Path | Implementation contract | Validation |
 | --- | --- | --- |
 | RAW / Turbo, Euler with no churn | Forecast-enabled | CPU source/component tests; GPU pending |
-| Native DPM++ 2M | Forecast-enabled | CPU source/component tests; GPU pending |
+| Native DPM++ 2M, RES Multistep, Gradient Estimation, DEIS, iPNDM, iPNDM-V | Forecast-enabled (default deterministic paths only) | Source-audited, real ComfyUI CPU integration; GPU image quality pending |
+| Native ER-SDE (stochastic or ODE) | Forecast-enabled with verified native update and sigma conversion, valid native scaler/noise/stage options | CPU contract/integration tests; stochastic image quality pending |
+| Native SA-Solver (SDE or ODE) | One predictor evaluation per step; native stochastic Adams equations and noise; forecasts never enter Adams history, and on stochastic inputs SA uses an actual-anchor value instead of the forecast | Source-audited CPU integration; CUDA quality pending |
+| Native SA-Solver PECE | Predictor forecasts permitted; corrected-state denoiser calls remain native, in their original after-callback order ; optional `sa_pece_forecast_policy` (`stable_start`/`balanced`/`max_speed`/`balanced_detail`) skips the model for predicted phases after a 3/2/1-step prefix and feeds the corrector an extrapolation of exact corrected results | Source-audited CPU predictor/corrector tests; CUDA quality pending |
 | Strictly decreasing custom schedules, truncated denoise / partial stages | Fresh state per sampler invocation; warmup and tail use the actual received schedule | CPU tests; real workflows pending |
 | Native CFG, combined or separate branches; batches | Independent histories keyed by ordered condition UUIDs and full layout | CPU tests; real checkpoints pending |
 | Text-to-image / image-to-image | Same native image denoiser contract | CPU structural tests; GPU pending |
@@ -41,11 +44,36 @@ RAW and Turbo have the same native class and no verified distillation flag. Prof
 | FP32 / BF16 / FP16 | Model-dtype snapshots; FP32 accumulation; native projection | CPU tests; CUDA/reduced-weight formats pending |
 | Standard weight LoRAs installed before this node | Original patched modules execute; state belongs to the current weight-patch identity | Lifecycle tests; real LoRA images pending |
 | 4D images / 5D with one temporal slice | Forecast-enabled; padding and output layout preserved | CPU tests |
-| Other samplers, repeated/nonmonotonic sigmas, Euler churn | Native fallback | Parity/fallback tests |
+| Other samplers, modified RES/DEIS delegates, custom solver options, repeated/nonmonotonic sigmas, Euler churn | Native fallback | Parity/fallback tests |
 | ControlNet, latent inpaint masks, regional masks/areas, scheduled hooks, custom CFG, transformer modifications, compiled model replacements, multi-device execution | Native fallback | Contract tests; no acceleration claim |
 | Multi-frame 5D input | Native fallback | No video support claim |
 
 Attention dispatch remains native. Unknown transformer wrappers fall back conservatively because skipping them could remove required side effects. Disabled and bypassed execution do not change the native model math. Native failures propagate with guaranteed hook/context cleanup.
+
+### Experimental qualified attention-patch interoperability
+
+The opt-in [Spectrum Krea 2 PR #2](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/2) overlay adds narrowly qualified support for two MODEL patch providers:
+
+- [Sol-H3 PR #44](https://github.com/xmarre/ComfyUI-Sol-H3/pull/44), through its **Sol-Krea2 Sparse Attention (Experimental)** node. Its own first dense evaluation remains part of the numerical attention history. BF16 uses packaged Sana CuTe; native FP16 uses the ComfyUI Kitchen kernel with protected text-conditioning blocks and 256 additional selected tokens by default. The FP16 route is experimental and has not been validated on a real checkpoint.
+- [Diff-Aid PR #12](https://github.com/xmarre/ComfyUI-DiffAid-Patches/pull/12), through its Krea 2 node in **text_residual**, **values_only**, or **keys_and_values** mode, with any valid sigma window, including partial and ramped windows.
+
+Install the relevant PR overlays using ComfyUI Patcher. MODEL wiring:
+
+    Krea 2 loader / LoRA (Sage auto optional)
+      -> Krea 2 Diff-Aid (optional)
+      -> Sol-Krea2 Sparse Attention (Experimental; optional)
+      -> Spectrum Apply Krea 2
+      -> guider / sampler
+
+A combined run requires **both** Spectrum PR #2 and Sol-H3 PR #44; add Diff-Aid PR #12 if Diff-Aid is used. The integration refuses unknown transformer replacements, unreviewed model-function wrappers, and invalid Diff-Aid sigma windows. These paths continue to use native sampling without forecasts.
+
+A partial or ramped Diff-Aid sigma window changes the patched model during sampling. Spectrum evaluates Diff-Aid's own window gain for every model call. When the gain changes, retained history is discarded and the step runs the real model, so no forecast or SA-PECE extrapolation crosses the change. Forecasting resumes once enough new actual anchors exist under the new gain. Each change therefore costs forecast opportunities. A window that opens or closes near the end of a short pass may leave no forecastable steps in it. Ramp shoulders change the gain at every step and run natively. The console summary reports each change as `Diff-Aid sigma-window transition`, and its `diffaid_gains` list records the gain at the first evaluation and at every change, with the outer step and sigma. See [Short high-resolution stages](#short-high-resolution-stages) for sampler calls that start below the model's maximum sigma.
+
+Spectrum does not extrapolate from anchors collected under a different attention backend. With Sol-Krea2's default `dense_evaluations=1`, the initial dense-to-sparse switch invalidates the first captured feature and may cost forecasts. To **align the two actual warmup steps** without an attention-route transition, explicitly set Sol-Krea2 `dense_evaluations=0`, retain Spectrum `warmup=2` and `bootstrap=false`, and leave Sol `dense_layers=2` and `extra_tokens=256` for initial quality tests. Spectrum still executes both initial denoiser evaluations; the first is now sparse rather than fully dense. This may alter initial image composition, so use a matched-seed dense comparison before accepting the change.
+
+There is no mathematically exact, zero-cost conversion from one dense feature anchor to a sparse feature anchor: the dense and sparse operators produce different features, and a later sparse feature alone cannot reconstruct the former at the same timestep. Do not fabricate anchors or disable attention-route segregation. The *separate* distance-extrapolation guard is user-configurable; changing it permits farther feature predictions within the same numerical backend but may cause image artifacts. If sparse-from-start causes visible artifacts, restore Sol `dense_evaluations=1` and retain the safe transition. Actual forecast counts also depend on the sigma schedule, remaining token budget, and feature-history conditions.
+
+Real-ComfyUI CPU integration verified the combined wrapper stack with an exact CPU substitute for Sol's CUDA attention kernel. **Real checkpoint CUDA execution, numerical fidelity, end-to-end acceleration, and decoded image quality remain unverified.** A nonzero forecast counter demonstrates skipped evaluations, not a measured speedup.
 
 ## Controls
 
@@ -55,9 +83,32 @@ Attention dispatch remains native. Unknown transformer wrappers fall back conser
 - **window / growth**: maximum consecutive forecasts between actual anchors. `window=0, growth=0` is an all-actual diagnostic. Growth is bounded at four forecasts; Turbo caps the window at one forecast and disables growth. Both profiles respect the chosen warmup and tail; defaults are four and two.
 - **max_history / budget_mb**: sliding actual-only history. All conditioning streams share one retained-feature budget. Temporary snapshots, predictions, model activations and allocator reservations need additional memory.
 - **storage**: `vram` avoids history transfers; `system_ram` moves retained snapshots to CPU and incurs transfers when predicting. Neither option retains full FP32 feature-space coefficients.
-- **debug**: explain actual-evaluation reasons. Every sampler invocation emits a JSON summary with completed actual/forecast call counts, effective settings and retained-history peak. Normal ComfyUI INFO logging must be enabled to see it.
+- **extrapolation_guard_enabled** (default **true**): controls only the history-span distance guard. Disable it to allow a regression forecast farther than the configured history-span ratio. This is experimental and may create incorrect anatomy, duplicates or other artifacts. The history-span degeneracy check, in-domain requirement, fitted-weight L1 bound and nonfinite checks still apply.
+- **max_extrapolation_span_ratio** (default **0.50**, range 0.05–8.00): maximum allowed forecast distance as a multiple of the retained real-history span. For example, 1.5 allows a gap up to 150% of the observed span; 0.5 allows 50%. Only applies when the guard is enabled. Raising the ratio may improve forecast counts without a proportional reduction in model calls elsewhere because the sampling schedule, Turbo window, tail and stability gates remain authoritative.
+- **debug**: explain actual-evaluation reasons. Every sampler invocation emits a JSON summary with completed actual/forecast call counts, effective guard settings, retained-history peak and, when a partial Diff-Aid sigma window is active, the `diffaid_gains` trace. Normal ComfyUI INFO logging must be enabled to see it.
 
-Forecasts stay inside the full sampler's normalized sigma domain and no farther than half the retained actual-history span. Regression weight magnitude and nonfinite checks can force extra actual calls. This bounds extrapolation; it does not prove image fidelity.
+All forecasts must be causal and inside the sampler's normalized sigma domain. With the distance guard enabled they must also remain within the selected fraction of the retained actual-history span. Even with that guard disabled, the regression-weight L1 bound (8), degenerate-history check, nonfinite checks and native fallback behavior remain active. These checks cannot establish image fidelity.
+
+### Short high-resolution stages
+
+In the observed Krea 2 Turbo 18-step `simple` scheduler, Scale-Locked Regenerate with `composition_lock_sigma=0.70` uses the final **7** steps as a high-resolution stage. With Spectrum `warmup=2`, `tail=1`, `window=1`, `bootstrap=false`, the existing 0.5 ratio admits **1 forecast**; raising the ratio to **1.5** or disabling the distance guard admits **2 forecasts** in a same-schedule CPU scheduling test. With `composition_lock_sigma=0.72`, the final **8** steps admit **2** and **3** forecasts, respectively. Retain the composition-lock threshold that produces the best anatomy; changing this Spectrum control does not change the resolution handoff. These counts are *schedule-specific execution tests*, not full-checkpoint CUDA quality claims. Compare identical seeds before adopting a more permissive guard.
+
+**Forecast budget of a short pass.** Every sampler call starts its own history. A regression forecast needs `degree + 1` actual anchors evaluated by the same operator, never lands in the warmup or the tail, and never follows a change of that operator without new anchors. With `degree=1`, `warmup=2`, `tail=1`, `window=1` a four-step pass has exactly one eligible step (actual, actual, **forecast**, actual) and a five-step pass one (actual, actual, **forecast**, actual, actual). A single operator change at or before the eligible step removes it:
+
+| Cause inside the pass | Four steps | Five steps |
+| --- | --- | --- |
+| None | 1 forecast | 1 forecast |
+| Diff-Aid gain change at the third step | 0 | 0 |
+| Diff-Aid gain change at the second step | 0 | 1 |
+| Diff-Aid gain change at the last step | 1 | 1 |
+| Sol-Krea2 `dense_evaluations=1` (default) | 0 | 1 |
+| Sol-Krea2 `dense_evaluations=0` | 1 | 1 |
+
+Spectrum does not recover these forecasts by itself. Features evaluated under another Diff-Aid gain or attention backend belong to a different function of the latent, and the only forecast that needs a single anchor is the bootstrap hold at the second, highest-noise step of the pass, which is applied only when `bootstrap` and a warmup of at most one are selected explicitly.
+
+**Diff-Aid window reference.** Diff-Aid normalizes its sigma window against the first sigma of the current sampler call by default. A pass that starts below the model's maximum sigma (partial denoise, or each re-noised resolution stage of a multi-stage sampler) therefore begins at normalized `1.0` again and crosses a partial window's boundary inside the pass, even when all of its noise levels lie on one side of that boundary. The Krea 2 Diff-Aid node's `sigma_reference = model_sigma_max` normalizes against the model's maximum sigma instead: the window then selects absolute noise levels, a pass entirely on one side of the boundary keeps one constant gain, and its forecast budget is that of the first table row. For sampler calls that start at the model's maximum sigma the two references are identical. For the others, `model_sigma_max` changes which steps Diff-Aid modulates, and therefore the image, independently of Spectrum; compare both at a matched seed. Read `diffaid_gains` in the summary to see which case a pass is in: one entry means one constant gain.
+
+These are scheduling results from CPU execution tests. They show which evaluations are skipped, not a measured speedup or an image-quality result.
 
 ## Examples and validation
 
@@ -73,3 +124,44 @@ Open a UI `.json` file from [examples](examples/README.md). Files ending `.api.j
 - **Model:** [Krea AI](https://github.com/krea-ai/krea-2). Its inference repository is Apache-2.0; model weights have separate terms.
 
 This repository's Python source is **GPL-3.0-or-later**. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). No model or text-encoder weights are distributed. The [Krea 2 Community License](https://www.krea.ai/krea-2-licensing) applies to downloaded weights and their use/deployment; it is not the Apache inference-code license. See the provenance record for the distinction and relevant conditions.
+
+### KJNodes Model Preview Override compatibility
+
+**KJNodes Model Preview Override** registers an `outer_sample.kj_preview_override` callback wrapper. Spectrum treats this *outer sampler observer* separately from the numerical transformer and denoiser patch graph. **There is no KJNodes version, source-file hash, callable signature, class name or callback implementation whitelist.** Any callable registered under this single `OUTER_SAMPLE` key is admitted to the *same runtime checks* applied without KJ: the effective native sampler entrypoint and solver, its options/sigma schedule, conditioning/CFG, active transformer patches, model identity and weight identity, the single denoiser opportunity per step, and callback ordering. The admitted wrapper instance/method/code-object identities are frozen for the duration of sampling and changes invalidate the active run. Future KJNodes updates that retain the same wrapper registration and execute the supported native solver require no Spectrum release. **Unknown transformer/diffusion wrappers, altered native solver contracts, extra model evaluations and unsupported conditioning still fall back**; no arbitrary modification of the numerical path is enabled.
+
+When supported, the preview callback remains active through both Krea 2 Scale-Locked passes; Spectrum's history and Sol-Krea2 backend route are still validated independently. KJNodes may warn that an optional tiny-preview VAE decodes a different channel count (for example 24 versus Krea 2's 16). That decoder is skipped; choose a compatible preview method or disable the optional tiny VAE. The effective sampler contract and CPU replay do not guarantee compatibility with all future KJNodes behaviors or prove GPU preview overhead negligible.
+
+### Scale-Locked Krea 2 sampler compatibility
+
+**SA-Solver native-only diagnostic.** The paired Krea 2 Scale-Locked node
+has an optional `sa_spectrum_forecasts` switch, on by default. Set it to
+`false` for a native-only quality reference. When disabled, an invocation-local
+context flag makes Spectrum evaluate **every** SA predictor and PECE correction
+with the genuine native denoiser, while leaving model/solver patches and
+stochastic noise unchanged. Native-only does not install Spectrum
+feature-capture hooks or retain multi-gigabyte predictor history. The report explicitly shows `native_only=true`
+and `forecast=0`. The flag is restored after sampling, including exceptions,
+and cannot affect other runs. Enabled mode preserves the qualified predictor
+forecast path. A native-only result that is still defective implicates the
+sampler or Scale-Locked stage/refinement rather than Spectrum extrapolation;
+this switch is a controlled diagnostic and is not a general SA image-quality
+guarantee.
+
+**Experimental `balanced_detail` quality candidate.** This keeps exactly
+the same PECE predictor-skip budget as `balanced`, but replaces the
+**out-of-horizon** corrected-endpoint extrapolation guard. The earlier guard
+jumps abruptly from a nearly full secant update at a half-log-SNR ratio of
+one to a complete hold when the ratio is slightly greater than one.
+`balanced_detail` uses a continuously bounded secant: weight `w=alpha`
+for ratios from zero to one, then `w=1/alpha` for ratios above one.
+The solver receives `latest_actual + w*(latest_actual-previous_actual)`.
+The extrapolated displacement is bounded by one exact corrected-endpoint
+change and decays smoothly toward a hold for very distant steps. Invalid
+or reversed geometry still holds, and **no raw current stochastic
+increment is introduced**. The already validated `off`, `balanced`,
+`stable_start`, and `max_speed` behavior is unchanged. This is an
+opt-in numerical experiment, **not an established CUDA quality fix**.
+Compare `off`, `balanced`, and `balanced_detail` on the same seed
+and checkpoint, including close-up detail at the last resolution stage.
+
+Scale-Locked Regenerate skips fully composition-locked high-resolution denoiser calls for its ten offered native solvers. The **separate Spectrum acceleration layer** supports Euler, DPM++ 2M, RES Multistep, Gradient Estimation, DEIS, iPNDM, iPNDM-V, **ER-SDE**, **SA-Solver**, and **SA-Solver PECE** when native source contracts match. A forecast replaces one denoised prediction; every solver retains its original numerical update and history, except that SA-Solver keeps forecasts out of its Adams history and replaces forecasts on stochastic inputs with an actual-anchor value (see docs/ARCHITECTURE.md). ER-SDE continues to inject native stochastic noise (or runs in its explicitly selected ODE mode). The native first-sigma flow correction is also applied to Spectrum history coordinates. ER-SDE accepts validated `max_stage`, `s_noise`, `noise_scaler` and `noise_sampler` options; unrecognized overrides and modified solver or sigma conversion source require native fallback. Scale-Locked's ER-SDE noise sampler couples per-step Gaussian increments across planner and target resolutions. All structural/CPU results are separate from real Krea 2 checkpoint quality and CUDA throughput, which require matched-seed evaluation.
