@@ -1,6 +1,6 @@
 # Validation evidence
 
-Validation uses small random Krea 2 weights on CPU. Real checkpoint images, CUDA performance, peak VRAM and image fidelity are unvalidated. The 2026-11-17 CI run also matched 40 native source contracts. See [v0.2.0 release notes](releases/v0.2.0.md) for the compatibility and prerelease scope.
+Structural validation uses small random Krea 2 weights on CPU. One external real-checkpoint pair provides limited image-quality evidence; broader fidelity, CUDA performance and peak VRAM remain unvalidated. The 2026-11-17 CI run also matched 40 native source contracts. See [v0.2.0 release notes](releases/v0.2.0.md) for the compatibility and prerelease scope.
 
 | Check | Executed result | Scope |
 | --- | --- | --- |
@@ -53,3 +53,12 @@ The native ComfyUI source-audit contracts now include `sample_res_multistep`, it
 ### DEIS, iPNDM, and iPNDM-V (2026-11-06)
 
 The remaining Scale-Locked sampler choices now have native source-contract checking and are admitted to Spectrum when their original one-call/one-callback solver semantics and default options hold. CPU tests cover native all-actual parity, feature-forecast determinism, 20-step Turbo execution counts (11 actual/9 forecast), altered DEIS coefficient helper rejection, option override rejection, and old native versions missing the new solver functions. The real ComfyUI integration tests all three through the original ModelPatcher/CFGGuider and sampling functions. The paired Scale-Locked workflow separately verifies the locked target pass (5 actual/3 forecasts from 8 unlocked steps); no full-checkpoint GPU throughput or perceptual fidelity claims follow from those CPU tests.
+
+
+### External real-checkpoint comparison (2026-11-17)
+
+An independently supplied matched-seed Krea 2 Turbo ER-SDE pair, 3920 × 5888 pixels, was inspected at full composition and with resized pixel metrics. Both outputs preserve the same subject placement, pose, background, clothing motifs and major facial structure, with localized differences in fine texture and expression. At 980 × 1472 resolution, the JPEG pair gives **SSIM 0.9272** and **PSNR 22.55 dB**; these values depend on resizing, encoding and reference alignment and are descriptive, not pass thresholds. The images have no embedded run association or EXIF metadata, so assigning each image to a particular run relies on the accompanying operator account. The images are not redistributed.
+
+The Spectrum execution report records 14 planner steps (**9 actual, 5 forecasts**) and 4 high-resolution steps (**4 actual, no forecasts**). The conservative 0.50 history-span guard rejected two planner forecasts and the only eligible high-resolution forecast. Full prompt durations were **114.88 s (Spectrum)** and **112.35 s (native)**. Warmed model/LoRA/text-encoder cache states differed between the two runs, so these totals do **not** demonstrate an end-to-end speedup. Approximate sampler progress durations were 16 vs 20 seconds for the planner, and 78 vs 82 seconds for high resolution; these single observations lack GPU synchronization and controlled warmup. The pair used ER-SDE, not SA-Solver PECE, so it gives no basis to change the default PECE policy from `off` to an accelerated option.
+
+These observations establish a useful single-case composition comparison. They do not verify reliable identity preservation, prompt adherence, CUDA numerical fidelity or acceleration over multiple seeds and workloads.

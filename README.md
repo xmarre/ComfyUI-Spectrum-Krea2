@@ -6,13 +6,13 @@ Based on **[Adaptive Spectral Feature Forecasting for Diffusion Sampling Acceler
 
 ## Status
 
-Version **0.2.0**, experimental GPU-validation prerelease for native sampler and qualified-patch interoperability. CPU tests exercise native Krea 2 model components and sampler source with small test weights. **Real Krea 2 checkpoint image quality, CUDA precision behavior and wall-clock acceleration are not yet validated.** Defaults are conservative engineering choices, not measured optima. Forecast counts measure computation avoided; they do not establish a speedup or fidelity.
+Version **0.2.1**, experimental GPU-validation prerelease for native sampler and qualified-patch interoperability. CPU tests exercise native Krea 2 model components and sampler source with small test weights. **One externally supplied real-checkpoint image pair shows close visual agreement; broad image fidelity, CUDA precision behavior and reproducible wall-clock acceleration remain unvalidated.** Defaults are conservative engineering choices, not measured optima. Forecast counts measure computation avoided; they do not establish a speedup or fidelity.
 
 The audited ComfyUI revision is [`7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe`](https://github.com/Comfy-Org/ComfyUI/tree/7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe). The integration checks the native sampler container by class and bound entrypoint, and checks model/solver source contracts rather than requiring that exact whole-repository version. Earlier native callback-container code is tested as well; logging changes alone do not disable forecasting. Changed contracts produce an explicit native fallback. Requires Python 3.10+, PyTorch 2.4+, and native Krea 2 support in ComfyUI. No additional runtime dependency or compiled extension is introduced.
 
 ## Install and use
 
-1. Install or update `https://github.com/xmarre/ComfyUI-Spectrum-Krea2` through ComfyUI Patcher. Spectrum's native sampler and qualified-patch interoperability are included in v0.2.0 on `main`; the former [PR #2](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/2) overlay is no longer needed. Install the compatible external patch providers separately as described below, then restart ComfyUI.
+1. Install or update `https://github.com/xmarre/ComfyUI-Spectrum-Krea2` through ComfyUI Patcher. Spectrum's native sampler and qualified-patch interoperability are included on `main`; the former [PR #2](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/2) overlay is no longer needed. Install the compatible external patch providers separately as described below, then restart ComfyUI.
 2. Load a Krea 2 RAW or Turbo diffusion model, its compatible Qwen3-VL **4B / 12-layer-tap** text encoder with **CLIPLoader type `krea2`**, and a compatible Wan 2.1 VAE.
 3. Connect the final loader/LoRA `MODEL` to **Spectrum Apply Krea 2**, then connect its `MODEL` output to the usual KSampler. Select `raw` or `turbo` to match the weights.
 4. Start with **Euler**, **simple** scheduler, and the paired examples below. Compare native and Spectrum with identical seeds and all other inputs. **DPM++ 2M**, **RES Multistep**, **Gradient Estimation**, **DEIS**, **iPNDM**, and **iPNDM-V** are also forecast-enabled when their source-audited deterministic native implementations are used with default options. **ER-SDE** and **SA-Solver** are supported through audited native stochastic solvers. **SA-Solver PECE** is predictor/corrector-aware: eligible predictor calls may forecast, while every corrected-state evaluation is retained as a native model call after the outer-step callback. SA-Solver's stochastic window, predictor/corrector order, noise strength and simplified-order-2 options are validated. CFG++ and unreviewed solver overrides are not included.
@@ -22,11 +22,11 @@ Disabling the node on an ordinary model returns the original MODEL unchanged. Re
 | Initial test | Steps | ComfyUI CFG | Profile | Warmup / tail | Forecast window |
 | --- | ---: | ---: | --- | --- | ---: |
 | RAW, 1024 × 1024 | 52 | 4.5 | raw | 4 / 2 | 1 |
-| Turbo, 1024 × 1024 | 8 | 1.0 | turbo | 4 / 2 | 1 |
+| Turbo, 1024 × 1024 | 8 | 1.0 | turbo | 2 / 1 | 1 |
 
 The official RAW inference example uses `guidance=3.5` in `cond + guidance*(cond-uncond)`, equivalent to ComfyUI's `uncond + 4.5*(cond-uncond)`. Official Turbo disables CFG with zero in its own API; **ComfyUI CFG 1.0** selects the conditional prediction. These are different API conventions.
 
-RAW and Turbo have the same native class and no verified distillation flag. Profile selection is explicit. At eight steps, Turbo permits at most one forecast with these defaults; numerical or memory checks can reduce that to zero. Short trajectories may remain entirely native.
+RAW and Turbo have the same native class and no verified distillation flag. Profile selection is explicit. At eight steps, forecast count varies with the actual sigma schedule, the extrapolation guard and other numerical gates; zero forecasts are possible. Short trajectories may remain entirely native.
 
 ## Compatibility
 
@@ -77,9 +77,12 @@ Real-ComfyUI CPU integration verified the combined wrapper stack with an exact C
 
 ## Controls
 
+New nodes default to **Turbo, degree 1, warmup 2, tail 1, bootstrap disabled, and the enabled 0.50 extrapolation guard**, matching the tested non-bootstrap configuration. Select **RAW** explicitly for RAW weights; the RAW example uses a separate, more conservative 4/2 warmup/tail. The optional SA-PECE acceleration policy stays **off** by default because the paired ER-SDE evidence does not validate PECE behavior. Existing saved workflows retain their stored widget values; upgrading this package does not rewrite them.
+
+
 - **degree / ridge**: Chebyshev polynomial degree and ridge regularization. Default degree 1 requires two actual anchors. Higher degrees require more history and can trigger numerical bounds.
 - **warmup / tail**: initial/final actual outer steps. At least `degree + 1` actual observations are needed per conditioning stream.
-- **bootstrap** (default on): with degree 1, warmup 0 or 1 and window of at least 1, the second outer step is forecast from the first actual step alone by holding its transformer features and projecting them with the current timestep, as Spectrum H3 does. Without it, the first forecast needs two actual anchors. The report counts these as `bootstrap_forecast`.
+- **bootstrap** (default off): with degree 1, warmup 0 or 1 and window of at least 1, the second outer step is forecast from the first actual step alone by holding its transformer features and projecting them with the current timestep, as Spectrum H3 does. Without it, the first forecast needs two actual anchors. The report counts these as `bootstrap_forecast`.
 - **window / growth**: maximum consecutive forecasts between actual anchors. `window=0, growth=0` is an all-actual diagnostic. Growth is bounded at four forecasts; Turbo caps the window at one forecast and disables growth. Both profiles respect the chosen warmup and tail; defaults are four and two.
 - **max_history / budget_mb**: sliding actual-only history. All conditioning streams share one retained-feature budget. Temporary snapshots, predictions, model activations and allocator reservations need additional memory.
 - **storage**: `vram` avoids history transfers; `system_ram` moves retained snapshots to CPU and incurs transfers when predicting. Neither option retains full FP32 feature-space coefficients.
@@ -114,7 +117,7 @@ These are scheduling results from CPU execution tests. They show which evaluatio
 
 Open a UI `.json` file from [examples](examples/README.md). Files ending `.api.json` are corresponding API prompts. Paired files differ only in Spectrum enablement and output filename. Choose your installed model/encoder/VAE filenames in both copies. The RAW reference pair also requires an input image.
 
-[v0.2.0 release notes](docs/releases/v0.2.0.md) summarize the compatibility changes and remaining validation requirements. [GPU validation](docs/GPU_VALIDATION.md) supplies the test matrix, paired image-review protocol, benchmark runner and PSNR/SSIM/optional LPIPS comparison tool. [Architecture](docs/ARCHITECTURE.md) documents interception, lifecycle, numerical formulation and compatibility boundaries. [Validation evidence](docs/VALIDATION.md) records checks actually run.
+[v0.2.1 release notes](docs/releases/v0.2.1.md) summarize the compatibility changes and remaining validation requirements. [GPU validation](docs/GPU_VALIDATION.md) supplies the test matrix, paired image-review protocol, benchmark runner and PSNR/SSIM/optional LPIPS comparison tool. [Architecture](docs/ARCHITECTURE.md) documents interception, lifecycle, numerical formulation and compatibility boundaries. [Validation evidence](docs/VALIDATION.md) records checks actually run.
 
 ## Attribution and licensing
 

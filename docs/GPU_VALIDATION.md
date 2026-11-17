@@ -1,12 +1,12 @@
 # Paired GPU validation
 
-This candidate has no real-checkpoint GPU measurements. CPU structure/parity tests do not establish perceptual quality, prompt adherence, text rendering, or acceleration. Use the same model file, LoRAs, encoder, VAE, seed, resolution, scheduler, sampler, CFG, denoise and attention backend in each pair.
+One externally supplied real-checkpoint pair has been visually compared, but it does not establish broad perceptual quality, prompt adherence, text rendering, or acceleration. CPU structure/parity tests do not establish these properties either. Use the same model file, LoRAs, encoder, VAE, seed, resolution, scheduler, sampler, CFG, denoise and attention backend in each pair.
 
 ## Immediate ComfyUI Patcher test
 
-Apply [PR #1](https://github.com/xmarre/ComfyUI-Spectrum-Krea2/pull/1) to `https://github.com/xmarre/ComfyUI-Spectrum-Krea2` and restart ComfyUI. Load `examples/raw_native.json` and `examples/raw_spectrum.json`. Select installed model/encoder/VAE files in both workflows. Keep the text encoder type `krea2` and keep each pair's seed fixed.
+Install the released `https://github.com/xmarre/ComfyUI-Spectrum-Krea2` through ComfyUI Patcher and restart ComfyUI. Load `examples/raw_native.json` and `examples/raw_spectrum.json`. Select installed model/encoder/VAE files in both workflows. Keep the text encoder type `krea2` and keep each pair's seed fixed.
 
-Begin at 1024 × 1024, RAW 52 steps/CFG 4.5, then Turbo 8 steps/CFG 1.0, Euler/simple, degree 1, ridge 0.01, warmup 4, tail 2, window 1, growth 0. Use the node's profile matching the weights. Turbo may offer only one forecast; a native result with zero forecasts is valid when a bound is hit, but establishes no acceleration.
+Begin at 1024 × 1024, RAW 52 steps/CFG 4.5 with the pinned example warmup 4/tail 2, then Turbo 8 steps/CFG 1.0 with warmup 2/tail 1, Euler/simple, degree 1, ridge 0.01, window 1 and growth 0. Turn bootstrap off, keep the 0.50 distance guard on and use identical controls in each A/B pair. Use the node's profile matching the weights. Turbo may offer only one forecast; a native result with zero forecasts is valid when a bound is hit, but establishes no acceleration.
 
 For references use the RAW reference pair, choose the same input image, and retain `index_timestep_zero` on positive and negative branches. Evaluate the baseline's editing capability first. A structurally valid reference path does not imply a base checkpoint is an effective edit model.
 

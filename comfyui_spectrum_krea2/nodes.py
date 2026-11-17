@@ -13,19 +13,19 @@ class SpectrumApplyKrea2:
         return {"required": {
             "model": ("MODEL",),
             "enabled": ("BOOLEAN", {"default": True}),
-            "preset": (["raw", "turbo"], {"default": "raw", "tooltip": "Select the loaded weights explicitly. Turbo limits forecasts to one between actual anchors."}),
+            "preset": (["raw", "turbo"], {"default": "turbo", "tooltip": "Select the loaded weights explicitly. Turbo limits forecasts to one between actual anchors."}),
             "degree": ("INT", {"default": 1, "min": 1, "max": 4, "tooltip": "Chebyshev degree; requires at least degree + 1 actual anchors."}),
             "ridge": ("FLOAT", {"default": 0.01, "min": 0.0, "max": 10.0, "step": 0.001}),
-            "warmup": ("INT", {"default": 4, "min": 0, "max": 100, "tooltip": "Initial actual outer steps. Forecasts additionally require degree + 1 actual anchors per conditioning stream."}),
-            "tail": ("INT", {"default": 2, "min": 1, "max": 100, "tooltip": "Final actual outer steps. The selected value is respected in both profiles."}),
+            "warmup": ("INT", {"default": 2, "min": 0, "max": 100, "tooltip": "Initial actual outer steps. Forecasts additionally require degree + 1 actual anchors per conditioning stream."}),
+            "tail": ("INT", {"default": 1, "min": 1, "max": 100, "tooltip": "Final actual outer steps. The selected value is respected in both profiles."}),
             "window": ("INT", {"default": 1, "min": 0, "max": 4, "tooltip": "Maximum consecutive forecasts between actual anchors. Zero with growth zero is an all-actual diagnostic."}),
             "growth": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "Additional forecast budget per actual anchor, capped at four. Disabled for Turbo."}),
             "max_history": ("INT", {"default": 8, "min": 2, "max": 32}),
-            "storage": (["vram", "system_ram"], {"tooltip": "VRAM avoids feature transfers. System RAM trades bandwidth for device memory."}),
+            "storage": (["vram", "system_ram"], {"default": "vram", "tooltip": "VRAM avoids feature transfers. System RAM trades bandwidth for device memory."}),
             "budget_mb": ("INT", {"default": 4096, "min": 64, "max": 65536, "step": 64, "tooltip": "Total retained feature budget across all conditioning streams; temporary tensors require additional memory."}),
             "debug": ("BOOLEAN", {"default": False}),
         }, "optional": {
-            "bootstrap": ("BOOLEAN", {"default": True, "tooltip": "Forecast the second outer step by holding the first actual "
+            "bootstrap": ("BOOLEAN", {"default": False, "tooltip": "Forecast the second outer step by holding the first actual "
                                       "step's features, as Spectrum H3 does. Applies with degree 1, warmup 0 or 1 and window 1 or more."}),
             "extrapolation_guard_enabled": ("BOOLEAN", {"default": True,
                 "tooltip": "Limit forecast distance relative to observed actual-history span. Disable to remove only this distance guard; weight stability, finite checks, warmup, Turbo window and tail remain active. Experimental; may reduce image fidelity."}),
@@ -43,9 +43,9 @@ class SpectrumApplyKrea2:
     CATEGORY = "model/patches/spectrum"
     DESCRIPTION = "Spectrum feature forecasting for native Krea 2 RAW/Turbo. GPU quality and performance require paired validation."
 
-    def apply(self, model, enabled=True, preset="raw", degree=1, ridge=0.01,
-              warmup=4, tail=2, window=1, growth=0.0, max_history=8,
-              storage="vram", budget_mb=4096, debug=False, bootstrap=True,
+    def apply(self, model, enabled=True, preset="turbo", degree=1, ridge=0.01,
+              warmup=2, tail=1, window=1, growth=0.0, max_history=8,
+              storage="vram", budget_mb=4096, debug=False, bootstrap=False,
               extrapolation_guard_enabled=True, max_extrapolation_span_ratio=0.5,
               sa_pece_forecast_policy="off"):
         from comfy.patcher_extension import WrappersMP

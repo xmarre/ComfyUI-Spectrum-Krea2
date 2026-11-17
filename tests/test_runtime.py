@@ -93,7 +93,7 @@ def test_context_lifetime_nested_and_thread_isolation():
     ({'degree':2},None),({'window':0},None),({'preset':'turbo'},'bootstrap'),
 ])
 def test_one_point_bootstrap_eligibility(changes,expected):
-    s=session(Config(**{'warmup':1,'tail':1,**changes}))
+    s=session(Config(**{'warmup':1,'tail':1,'bootstrap':True,**changes}))
     a=s.stream('positive')
     s.active_step=0
     assert s.forecast_mode(a) is None
