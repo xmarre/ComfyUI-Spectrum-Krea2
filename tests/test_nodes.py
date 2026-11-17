@@ -71,3 +71,31 @@ def test_entrypoint_comfy_package_import():
         for key in list(sys.modules):
             if key==name or key.startswith(name+'.'):
                 sys.modules.pop(key)
+
+
+
+def test_extrapolation_controls_append_to_legacy_workflow_widget_order(native):
+    schema = SpectrumApplyKrea2.INPUT_TYPES()
+    required = list(schema["required"])
+    optional = list(schema["optional"])
+    assert required == [
+        "model", "enabled", "preset", "degree", "ridge", "warmup", "tail",
+        "window", "growth", "max_history", "storage", "budget_mb", "debug",
+    ]
+    assert optional == [
+        "bootstrap", "extrapolation_guard_enabled", "max_extrapolation_span_ratio",
+        "sa_pece_forecast_policy",
+    ]
+    patcher = Patcher(tiny_model(native[0]))
+    default = SpectrumApplyKrea2().apply(patcher)[0]
+    default_binding = default.get_wrappers("diffusion_model", KEY)[0].args[0]
+    assert default_binding.config.extrapolation_guard_enabled is True
+    assert default_binding.config.max_extrapolation_span_ratio == 0.5
+    assert default_binding.config.sa_pece_forecast_policy == "off"
+    selected = SpectrumApplyKrea2().apply(
+        patcher, extrapolation_guard_enabled=False,
+        max_extrapolation_span_ratio=1.75,
+    )[0]
+    binding = selected.get_wrappers("diffusion_model", KEY)[0].args[0]
+    assert binding.config.extrapolation_guard_enabled is False
+    assert binding.config.max_extrapolation_span_ratio == 1.75
