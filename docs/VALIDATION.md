@@ -1,6 +1,6 @@
 # Validation evidence
 
-Structural validation uses small random Krea 2 weights on CPU. One external real-checkpoint pair provides limited image-quality evidence; broader fidelity, CUDA performance and peak VRAM remain unvalidated. The 2026-11-17 CI run also matched 40 native source contracts. See [v0.2.0 release notes](releases/v0.2.0.md) for the compatibility and prerelease scope.
+Structural validation uses small random Krea 2 weights on CPU. One external real-checkpoint pair provides limited image-quality evidence; broader fidelity, CUDA performance and peak VRAM remain unvalidated. The 2026-11-17 CI run also matched 40 native source contracts. See the [v0.2.1 release notes](releases/v0.2.1.md) for the shipped defaults, compatibility, and validation scope.
 
 | Check | Executed result | Scope |
 | --- | --- | --- |
