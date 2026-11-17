@@ -2,6 +2,7 @@ import copy
 import pytest
 from native_components import tiny_model
 from comfyui_spectrum_krea2.nodes import SpectrumApplyKrea2
+from comfyui_spectrum_krea2.config import Config
 from comfyui_spectrum_krea2.sampling import KEY
 
 
@@ -99,3 +100,51 @@ def test_extrapolation_controls_append_to_legacy_workflow_widget_order(native):
     binding = selected.get_wrappers("diffusion_model", KEY)[0].args[0]
     assert binding.config.extrapolation_guard_enabled is False
     assert binding.config.max_extrapolation_span_ratio == 1.75
+
+
+
+def test_new_node_defaults_match_runtime_and_preserve_quality_guard(native):
+    schema = SpectrumApplyKrea2.INPUT_TYPES()
+    required = schema["required"]
+    optional = schema["optional"]
+    expected = {
+        "preset": "turbo",
+        "degree": 1,
+        "ridge": 0.01,
+        "warmup": 2,
+        "tail": 1,
+        "window": 1,
+        "growth": 0.0,
+        "max_history": 8,
+        "storage": "vram",
+        "budget_mb": 4096,
+        "debug": False,
+        "bootstrap": False,
+        "extrapolation_guard_enabled": True,
+        "max_extrapolation_span_ratio": 0.5,
+        "sa_pece_forecast_policy": "off",
+    }
+    config = Config()
+    patcher = Patcher(tiny_model(native[0]))
+    applied = SpectrumApplyKrea2().apply(patcher)[0]
+    bound = applied.get_wrappers("diffusion_model", KEY)[0].args[0].config
+    for name, value in expected.items():
+        widget = required.get(name, optional.get(name))
+        assert widget[1]["default"] == value, name
+        assert getattr(config, name) == value, name
+        assert getattr(bound, name) == value, name
+    assert not config.bootstrap_active
+    assert Config(preset="raw").preset == "raw"
+    assert Config(warmup=1, bootstrap=True).bootstrap_active
+
+
+def test_saved_workflow_values_are_not_overridden_by_defaults(native):
+    patcher = Patcher(tiny_model(native[0]))
+    explicit = SpectrumApplyKrea2().apply(
+        patcher, preset="raw", warmup=4, tail=2, bootstrap=True,
+        sa_pece_forecast_policy="balanced_detail",
+    )[0]
+    cfg = explicit.get_wrappers("diffusion_model", KEY)[0].args[0].config
+    assert (cfg.preset, cfg.warmup, cfg.tail, cfg.bootstrap, cfg.sa_pece_forecast_policy) == (
+        "raw", 4, 2, True, "balanced_detail"
+    )

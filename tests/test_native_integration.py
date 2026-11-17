@@ -389,7 +389,7 @@ def test_signature_introspection_failure_only_affects_diagnostics(native,monkeyp
 def test_bootstrap_holds_first_actual_features_at_second_step(native):
     model=tiny_model(native[0])
     x,t0,c=inputs(model)
-    binding,session=setup_session(model,x,Config(warmup=1,tail=1))
+    binding,session=setup_session(model,x,Config(warmup=1,tail=1,bootstrap=True))
     token=CURRENT.set(session)
     try:
         with torch.no_grad():
@@ -414,7 +414,7 @@ def test_bootstrap_holds_first_actual_features_at_second_step(native):
 def test_bootstrap_adds_the_second_step_forecast_to_short_turbo_runs(native):
     model=tiny_model(native[0])
     _,without=run(model,Config(preset='turbo',warmup=1,tail=1,bootstrap=False),steps=8)
-    _,with_bootstrap=run(model,Config(preset='turbo',warmup=1,tail=1),steps=8)
+    _,with_bootstrap=run(model,Config(preset='turbo',warmup=1,tail=1,bootstrap=True),steps=8)
     assert with_bootstrap['fallback'] is None
     assert with_bootstrap['bootstrap_forecast']==1 and without['bootstrap_forecast']==0
     assert with_bootstrap['effective_config']['bootstrap'] is True
