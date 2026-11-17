@@ -18,7 +18,19 @@ REQUESTS={
     'comfy/ldm/krea2/model.py':{
         'SingleStreamDiT':['_forward','forward','process_img','_unpack_context'],
         **{name:['forward'] for name in ['LastLayer','RMSNorm','QKNorm','SwiGLU','Attention','SimpleModulation','DoubleSharedModulation','TextFusionBlock','TextFusionTransformer','SingleStreamBlock']}},
-    'comfy/k_diffusion/sampling.py':{None:['sample_euler','sample_dpmpp_2m']},
+    'comfy/k_diffusion/sampling.py':{None:['sample_euler','sample_dpmpp_2m',
+                                           'sample_res_multistep','res_multistep',
+                                           'sample_gradient_estimation',
+                                           'sample_deis','sample_ipndm','sample_ipndm_v',
+                                           'sample_er_sde','sample_sa_solver','sample_sa_solver_pece',
+                                           'sigma_to_half_log_snr',
+                                           'offset_first_sigma_for_snr']},
+    'comfy/k_diffusion/sa_solver.py':{None:[
+        'compute_stochastic_adams_b_coeffs',
+        'compute_simple_stochastic_adams_b_coeffs',
+        'compute_exponential_coeffs', 'get_tau_interval_func']},
+    'comfy/k_diffusion/deis.py':{None:['get_deis_coeff_list','edm2t','cal_poly',
+                                       'cal_intergrand','t2alpha_fn']},
     'comfy/samplers.py':{'KSAMPLER':['sample']},
     'comfy/ldm/flux/layers.py':{None:['timestep_embedding']},
 }
@@ -36,7 +48,10 @@ def collect(root):
                 lines=source.splitlines(keepends=True)
                 first=min([node.lineno]+[n.lineno for n in node.decorator_list])-1
                 code=''.join(lines[first:node.end_lineno])
-                prefix={'SingleStreamDiT':'model','LastLayer':'last','KSAMPLER':'sampler'}.get(cls,cls or 'native')
+                prefix=('deis' if path.endswith('/deis.py') else
+                        'sa_solver' if path.endswith('/sa_solver.py') else
+                        {'SingleStreamDiT':'model','LastLayer':'last',
+                         'KSAMPLER':'sampler'}.get(cls, cls or 'native'))
                 value=source_digest(code)
                 contracts[prefix+'.'+name]=value
                 if cls in {'SingleStreamDiT','LastLayer'} and name=='forward':
@@ -58,7 +73,8 @@ def main():
     else:
         changed=sorted(k for k in set(found)|set(CONTRACTS) if found.get(k)!=CONTRACTS.get(k))
         if changed:
-            raise SystemExit('Native source contracts differ: '+', '.join(changed))
+            details = '; '.join(f"{key}: expected {CONTRACTS.get(key)!r}, audited {found.get(key)!r}" for key in changed)
+            raise SystemExit('Native source contracts differ: ' + details)
         print(f'{len(found)} native source contracts match')
 
 
