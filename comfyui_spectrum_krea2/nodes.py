@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 xmarre
 from functools import partial
-from .config import Config
+from .config import Config, EXTRAPOLATION_GUARD_SCOPES
 from .compat import native_model
 from .sampling import Binding, KEY
 from .adapter import diffusion
@@ -36,6 +36,10 @@ class SpectrumApplyKrea2:
                            "(stable_start/balanced/max_speed), each predicted phase skips the model and uses an "
                            "extrapolation of the exact corrected results; every correction still runs the model. "
                            "balanced_detail keeps the balanced skip cadence but replaces abrupt late-step guard holds with a bounded continuous corrected-endpoint trend. Experimental: compare with off at a matched seed."}),
+            "extrapolation_guard_scope": (list(EXTRAPOLATION_GUARD_SCOPES), {"default": "all",
+                "tooltip": "When the guard is enabled, apply it to both Scale-Locked passes (all), "
+                           "only the low-resolution planner, or only the high-resolution refinement passes. "
+                           "Standalone sampling uses extrapolation_guard_enabled directly."}),
         }}
 
     RETURN_TYPES = ("MODEL",)
@@ -47,7 +51,7 @@ class SpectrumApplyKrea2:
               warmup=2, tail=1, window=1, growth=0.0, max_history=8,
               storage="vram", budget_mb=4096, debug=False, bootstrap=False,
               extrapolation_guard_enabled=True, max_extrapolation_span_ratio=0.5,
-              sa_pece_forecast_policy="off"):
+              sa_pece_forecast_policy="off", extrapolation_guard_scope="all"):
         from comfy.patcher_extension import WrappersMP
         types = (WrappersMP.SAMPLER_SAMPLE, WrappersMP.PREDICT_NOISE, WrappersMP.DIFFUSION_MODEL)
         installed = any(model.get_wrappers(t, KEY) for t in types)
@@ -64,7 +68,8 @@ class SpectrumApplyKrea2:
                         max_history, storage, budget_mb, debug, bool(bootstrap),
                         extrapolation_guard_enabled=extrapolation_guard_enabled,
                         max_extrapolation_span_ratio=max_extrapolation_span_ratio,
-                        sa_pece_forecast_policy=sa_pece_forecast_policy)
+                        sa_pece_forecast_policy=sa_pece_forecast_policy,
+                        extrapolation_guard_scope=extrapolation_guard_scope)
         binding = Binding(config)
         cloned.add_wrapper_with_key(types[0], KEY, binding.sampler)
         cloned.add_wrapper_with_key(types[1], KEY, binding.predict)
