@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 xmarre
 import copy
+from dataclasses import replace
 import json
 import inspect
 import logging
@@ -201,9 +202,17 @@ class Binding:
         if not torch.is_tensor(noise) or noise.ndim not in (4, 5) or (noise.ndim == 5 and noise.shape[2] != 1):
             reason = reason or "only image latents and single-frame 5D latents are forecast-enabled"
         coordinates = [] if reason else [2 * (values[0] - s) / (values[0] - values[-1]) - 1 for s in values[:-1]]
-        session = Session(self, self.config, coordinates, inner,
+        model_options = extra_args.get("model_options", {})
+        stage = model_options.get("spectrum_krea2_stage", "standalone")
+        config = self.config
+        if config.extrapolation_guard_enabled and (
+            (stage == "planner" and config.extrapolation_guard_scope == "highres_only")
+            or (stage == "highres" and config.extrapolation_guard_scope == "planner_only")
+        ):
+            config = replace(config, extrapolation_guard_enabled=False)
+        session = Session(self, config, coordinates, inner,
                           getattr(model_wrap.inner_model, "current_weight_patches_uuid", None),
-                          noise.shape[0], tuple(noise.shape[-2:]))
+                          noise.shape[0], tuple(noise.shape[-2:]), stage=stage)
         session.weight_owner = model_wrap.inner_model
         session.sigmas = tuple(values[:-1])
         sa_options = executor.class_obj.extra_options
@@ -228,9 +237,9 @@ class Binding:
             # A condition entering or leaving mid-trajectory changes the
             # model between SA's shared actual anchors and a dense output.
             reason = reason or "timestep-ranged conditioning is not forecast-enabled with SA-Solver"
-        session.model_function_wrapper = extra_args.get("model_options", {}).get("model_function_wrapper")
+        session.model_function_wrapper = model_options.get("model_function_wrapper")
         from .qualified_patches import qualify
-        session.patch_policy, _ = qualify(extra_args.get("model_options", {}))
+        session.patch_policy, _ = qualify(model_options)
         if reason:
             session.disable(reason)
         token = CURRENT.set(session)

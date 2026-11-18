@@ -85,6 +85,7 @@ def test_history_alias_is_explicit_ownership_contract():
 @pytest.mark.parametrize('change', [dict(degree=0),dict(degree=5),dict(ridge=float('nan')),dict(max_history=1),dict(window=5),dict(growth=float('inf')),dict(tail=0),dict(storage='auto'),dict(budget_mb=0),dict(bootstrap=1),
     dict(extrapolation_guard_enabled=1),
     dict(extrapolation_guard_enabled=None),
+    dict(extrapolation_guard_scope="unknown"),
     dict(max_extrapolation_span_ratio=float('nan')),
     dict(max_extrapolation_span_ratio=float('inf')),
     dict(max_extrapolation_span_ratio=-1),

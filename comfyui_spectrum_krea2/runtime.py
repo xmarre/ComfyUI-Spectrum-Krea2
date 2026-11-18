@@ -43,6 +43,7 @@ class Session:
     weight_identity: object
     batch: int
     spatial: tuple
+    stage: str = "standalone"
     step: int = 0
     active_step: int | None = None
     predict_calls: int = 0
@@ -180,7 +181,8 @@ class Session:
                                      "degree": self.config.degree,
                                      "bootstrap": self.config.bootstrap_active,
                                      "extrapolation_guard_enabled": self.config.extrapolation_guard_enabled,
+                                     "extrapolation_guard_scope": self.config.extrapolation_guard_scope,
                                      "max_extrapolation_span_ratio": self.config.max_extrapolation_span_ratio},
                 "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons),
                 "diffaid_gains": [dict(entry) for entry in self.diffaid_gains],
-                "native_only": self.native_only}
+                "native_only": self.native_only, "stage": self.stage}

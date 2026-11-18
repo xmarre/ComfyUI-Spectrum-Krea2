@@ -96,7 +96,7 @@ class Owner:
         return out[0] if not self.split else out[1]+self.cfg*(out[0]-out[1])
 
 
-def run(model, config=None, steps=12, split=False, sigmas=None, options=None, callback=None,sampler_name='sample_euler',sampler_options=None,wrapped=True,conds=None):
+def run(model, config=None, steps=12, split=False, sigmas=None, options=None, callback=None,sampler_name='sample_euler',sampler_options=None,wrapped=True,conds=None,stage=None):
     from comfy.samplers import KSAMPLER
     from comfy.k_diffusion import sampling
     from comfy.patcher_extension import WrapperExecutor
@@ -113,9 +113,12 @@ def run(model, config=None, steps=12, split=False, sigmas=None, options=None, ca
     executor=WrapperExecutor.new_class_executor(sampler.sample,sampler,[binding.sampler] if wrapped else [])
     reports=[]
     token=REPORTS.set(reports)
+    model_options = {"transformer_options": options}
+    if stage is not None:
+        model_options["spectrum_krea2_stage"] = stage
     try:
         with torch.no_grad():
-            result=executor.execute(owner,sigmas,{'model_options':{'transformer_options':options}},callback,x,torch.zeros_like(x))
+            result=executor.execute(owner,sigmas,{"model_options": model_options},callback,x,torch.zeros_like(x))
     finally:
         REPORTS.reset(token)
     return result,(reports[0] if reports else None)
@@ -542,6 +545,25 @@ def test_krea_simple_high_resolution_schedule_guard_toggle(
         assert not any('extrapolation exceeds' in reason
                        for reason in reports[name]['actual_reasons'])
 
+    for scope, guarded_stages in (
+        ("all", {"planner", "highres", None}),
+        ("planner_only", {"planner", None}),
+        ("highres_only", {"highres", None}),
+    ):
+        config = Config(**baseline_config, extrapolation_guard_scope=scope)
+        for stage in ("planner", "highres", None):
+            _, report = run(model, config, steps=remaining, sigmas=sigmas, stage=stage)
+            guarded = stage in guarded_stages
+            assert report["stage"] == (stage or "standalone")
+            assert report["effective_config"]["extrapolation_guard_enabled"] is guarded
+            assert report["forecast"] == (expected_default if guarded else expected_relaxed), report
+        assert config.extrapolation_guard_enabled is True
+
+    _, disabled = run(model, Config(**baseline_config, extrapolation_guard_scope="planner_only",
+                                   extrapolation_guard_enabled=False),
+                      steps=remaining, sigmas=sigmas, stage="planner")
+    assert disabled["forecast"] == expected_relaxed
+    assert disabled["effective_config"]["extrapolation_guard_enabled"] is False
 
 
 @pytest.mark.parametrize('sampler_name', ['sample_res_multistep', 'sample_gradient_estimation',

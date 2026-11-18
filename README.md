@@ -6,7 +6,7 @@ Based on **[Adaptive Spectral Feature Forecasting for Diffusion Sampling Acceler
 
 ## Status
 
-Version **0.2.1**, published GitHub Release and Comfy registry package with native sampler and qualified-patch interoperability. CPU tests exercise native Krea 2 model components and sampler source with small test weights. **One externally supplied real-checkpoint image pair shows close visual agreement; broad image fidelity, CUDA precision behavior and reproducible wall-clock acceleration remain unvalidated.** Defaults are conservative engineering choices, not measured optima. Forecast counts measure computation avoided; they do not establish a speedup or fidelity.
+Version **0.2.2** adds a stage-selective extrapolation guard for Scale-Locked Krea 2. CPU tests exercise native Krea 2 model components and sampler source with small test weights. One real-checkpoint run confirms per-stage guard routing. Broad image fidelity, CUDA precision behavior and reproducible wall-clock acceleration remain unvalidated.
 
 The audited ComfyUI revision is [`7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe`](https://github.com/Comfy-Org/ComfyUI/tree/7ad7adb38f6cbb6c2b0713d3bd44c3fb2b9c8ebe). The integration checks the native sampler container by class and bound entrypoint, and checks model/solver source contracts rather than requiring that exact whole-repository version. Earlier native callback-container code is tested as well; logging changes alone do not disable forecasting. Changed contracts produce an explicit native fallback. Requires Python 3.10+, PyTorch 2.4+, and native Krea 2 support in ComfyUI. No additional runtime dependency or compiled extension is introduced.
 
@@ -87,6 +87,7 @@ New nodes default to **Turbo, degree 1, warmup 2, tail 1, bootstrap disabled, an
 - **max_history / budget_mb**: sliding actual-only history. All conditioning streams share one retained-feature budget. Temporary snapshots, predictions, model activations and allocator reservations need additional memory.
 - **storage**: `vram` avoids history transfers; `system_ram` moves retained snapshots to CPU and incurs transfers when predicting. Neither option retains full FP32 feature-space coefficients.
 - **extrapolation_guard_enabled** (default **true**): controls only the history-span distance guard. Disable it to allow a regression forecast farther than the configured history-span ratio. This is experimental and may create incorrect anatomy, duplicates or other artifacts. The history-span degeneracy check, in-domain requirement, fitted-weight L1 bound and nonfinite checks still apply.
+- **extrapolation_guard_scope** (default **all**): with the guard enabled, choose `all` for both the planner and high-resolution passes, `planner_only` for the low-resolution planner, or `highres_only` for each refinement pass. Stage selection requires [Scale-Locked v1.3.2](https://github.com/xmarre/ComfyUI-ScaleLockedResidualDiffusion/releases/tag/v1.3.2) or later. In spectral-progressive mode the first segment is the planner and each later segment is high-resolution. Standalone samplers use the master guard toggle, and turning it off disables the distance guard at every stage. The sampler report lists the stage and the effective guard state.
 - **max_extrapolation_span_ratio** (default **0.50**, range 0.05–8.00): maximum allowed forecast distance as a multiple of the retained real-history span. For example, 1.5 allows a gap up to 150% of the observed span; 0.5 allows 50%. Only applies when the guard is enabled. Raising the ratio may improve forecast counts without a proportional reduction in model calls elsewhere because the sampling schedule, Turbo window, tail and stability gates remain authoritative.
 - **debug**: explain actual-evaluation reasons. Every sampler invocation emits a JSON summary with completed actual/forecast call counts, effective guard settings, retained-history peak and, when a partial Diff-Aid sigma window is active, the `diffaid_gains` trace. Normal ComfyUI INFO logging must be enabled to see it.
 
@@ -117,7 +118,7 @@ These are scheduling results from CPU execution tests. They show which evaluatio
 
 Open a UI `.json` file from [examples](examples/README.md). Files ending `.api.json` are corresponding API prompts. Paired files differ only in Spectrum enablement and output filename. Choose your installed model/encoder/VAE filenames in both copies. The RAW reference pair also requires an input image.
 
-[v0.2.1 release notes](docs/releases/v0.2.1.md) summarize the compatibility changes and remaining validation requirements. [GPU validation](docs/GPU_VALIDATION.md) supplies the test matrix, paired image-review protocol, benchmark runner and PSNR/SSIM/optional LPIPS comparison tool. [Architecture](docs/ARCHITECTURE.md) documents interception, lifecycle, numerical formulation and compatibility boundaries. [Validation evidence](docs/VALIDATION.md) records checks actually run.
+[v0.2.2 release notes](docs/releases/v0.2.2.md) summarize the stage control and validation. [GPU validation](docs/GPU_VALIDATION.md) supplies the test matrix, paired image-review protocol, benchmark runner and PSNR/SSIM/optional LPIPS comparison tool. [Architecture](docs/ARCHITECTURE.md) documents interception, lifecycle, numerical formulation and compatibility boundaries. [Validation evidence](docs/VALIDATION.md) records checks actually run.
 
 ## Attribution and licensing
 
@@ -136,7 +137,7 @@ When supported, the preview callback remains active through both Krea 2 Scale-Lo
 
 ### Scale-Locked Krea 2 sampler compatibility
 
-**Scale-Locked native-only diagnostics.** With the [Scale-Locked PR #22](https://github.com/xmarre/ComfyUI-ScaleLockedResidualDiffusion/pull/22) overlay (stacked on PR #21), the paired Krea 2 Scale-Locked
+**Scale-Locked native-only diagnostics.** In [Scale-Locked v1.3.2](https://github.com/xmarre/ComfyUI-ScaleLockedResidualDiffusion/releases/tag/v1.3.2) or later, the Krea 2 Scale-Locked
 node exposes `sa_spectrum_forecasts` (SA-Solver only) and the legacy-named
 `sa_planner_spectrum_forecasts` (all Spectrum-supported samplers, including
 ER-SDE). Turning off the planner switch uses genuine native denoiser
@@ -148,7 +149,7 @@ switches default to true; their saved workflow names remain unchanged.
 Two distinct invocation-local context flags preserve their scopes: the
 original `FORCE_NATIVE` applies only to SA-Solver, including its native
 PECE corrections, and does not suppress unrelated nested Euler/ER-SDE calls.
-The new `FORCE_NATIVE_ALL_SAMPLERS` applies only within the planner
+`FORCE_NATIVE_ALL_SAMPLERS` applies only within the planner
 invocation, suppressing forecasts for every qualified sampler until that
 scope exits. Neither changes model/solver patches, stochastic noise, or
 scheduler behavior. Native-only does not retain feature-prediction history.

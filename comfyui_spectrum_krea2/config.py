@@ -8,6 +8,7 @@ import math
 # predicted phase always runs the model. "off" keeps Spectrum's normal cadence.
 SA_PECE_POLICIES = {"off": None, "stable_start": 3, "balanced": 2, "max_speed": 1,
                     "balanced_detail": 2}
+EXTRAPOLATION_GUARD_SCOPES = ("all", "planner_only", "highres_only")
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class Config:
     extrapolation_guard_enabled: bool = True
     max_extrapolation_span_ratio: float = 0.5
     sa_pece_forecast_policy: str = "off"
+    extrapolation_guard_scope: str = "all"
 
     def __post_init__(self):
         if self.preset not in {"raw", "turbo"}:
@@ -48,6 +50,8 @@ class Config:
             raise ValueError("bootstrap must be a boolean")
         if type(self.extrapolation_guard_enabled) is not bool:
             raise ValueError("extrapolation_guard_enabled must be a boolean")
+        if self.extrapolation_guard_scope not in EXTRAPOLATION_GUARD_SCOPES:
+            raise ValueError("extrapolation_guard_scope must be one of: " + ", ".join(EXTRAPOLATION_GUARD_SCOPES))
         ratio = self.max_extrapolation_span_ratio
         if (type(ratio) not in (int, float) or not math.isfinite(ratio)
                 or not 0.05 <= ratio <= 8.0):

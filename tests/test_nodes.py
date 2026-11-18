@@ -85,7 +85,7 @@ def test_extrapolation_controls_append_to_legacy_workflow_widget_order(native):
     ]
     assert optional == [
         "bootstrap", "extrapolation_guard_enabled", "max_extrapolation_span_ratio",
-        "sa_pece_forecast_policy",
+        "sa_pece_forecast_policy", "extrapolation_guard_scope",
     ]
     patcher = Patcher(tiny_model(native[0]))
     default = SpectrumApplyKrea2().apply(patcher)[0]
@@ -95,11 +95,12 @@ def test_extrapolation_controls_append_to_legacy_workflow_widget_order(native):
     assert default_binding.config.sa_pece_forecast_policy == "off"
     selected = SpectrumApplyKrea2().apply(
         patcher, extrapolation_guard_enabled=False,
-        max_extrapolation_span_ratio=1.75,
+        max_extrapolation_span_ratio=1.75, extrapolation_guard_scope="highres_only",
     )[0]
     binding = selected.get_wrappers("diffusion_model", KEY)[0].args[0]
     assert binding.config.extrapolation_guard_enabled is False
     assert binding.config.max_extrapolation_span_ratio == 1.75
+    assert binding.config.extrapolation_guard_scope == "highres_only"
 
 
 
@@ -123,6 +124,7 @@ def test_new_node_defaults_match_runtime_and_preserve_quality_guard(native):
         "extrapolation_guard_enabled": True,
         "max_extrapolation_span_ratio": 0.5,
         "sa_pece_forecast_policy": "off",
+        "extrapolation_guard_scope": "all",
     }
     config = Config()
     patcher = Patcher(tiny_model(native[0]))
