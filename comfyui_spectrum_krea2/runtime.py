@@ -163,7 +163,11 @@ class Session:
         self.peak_history_bytes = max(self.peak_history_bytes, self.nbytes)
 
     def report(self):
-        return {"actual": self.counts["actual"], "forecast": self.counts["forecast"],
+        mode = getattr(self.patch_policy, "mode_explorer", None)
+        spectrum_policy = (
+            "full" if getattr(mode.settings, "full_spectrum", False) else "guarded"
+        ) if mode is not None else "spectrum_only"
+        return {"mode_explorer_spectrum_policy": spectrum_policy, "actual": self.counts["actual"], "forecast": self.counts["forecast"],
                 "denoiser_calls": self.counts["actual"] + self.counts["forecast"],
                 "outer_steps": self.step, "peak_history_bytes": self.peak_history_bytes,
                 "bootstrap_forecast": self.counts["bootstrap"],

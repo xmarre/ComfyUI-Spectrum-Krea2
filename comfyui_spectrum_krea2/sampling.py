@@ -163,7 +163,10 @@ def update_mode_explorer_regime(session):
     """Keep forecast anchors within one early-feature operator regime."""
     policy = session.patch_policy
     mode = getattr(policy, "mode_explorer", None)
-    if mode is None or session.step >= len(session.sigmas):
+    if (mode is None or getattr(mode.settings, "full_spectrum", False)
+            or session.step >= len(session.sigmas)):
+        # Full Spectrum retains the exact native/forecast selection policy and
+        # forecast history even across ModeExplorer's guided/native boundary.
         return
     guided = mode.guides(session.sigmas[session.step], session.step,
                          session.batch, session.stage)

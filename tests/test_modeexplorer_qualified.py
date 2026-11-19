@@ -1,7 +1,8 @@
 """Narrow trust and regime rules for ModeExplorer's Spectrum integration."""
 import sys
 from dataclasses import dataclass
-from types import ModuleType
+from collections import Counter
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -25,6 +26,7 @@ def mode_graph(monkeypatch):
         operation: str = "auto"
         reference_budget: int = 2
         diagnostics: bool = False
+        full_spectrum: bool = False
 
     class SamplerWrapper:
         def __init__(self, settings):
@@ -104,3 +106,45 @@ def test_explicit_operation_guards(mode_graph, feature, batch, operation, active
     sampler.settings = type(sampler.settings)(feature=feature, operation=operation)
     policy, reason = qualify({"transformer_options": trans})
     assert reason is None and policy.mode_explorer.guides(0.99, 0, batch, "planner") is active
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_optional_full_spectrum_preserves_original_forecast_policy(mode_graph, full):
+    """Full Spectrum must never clear anchors or force extra evaluations."""
+    from comfyui_spectrum_krea2.sampling import update_mode_explorer_regime
+
+    sampler, trans = mode_graph
+    sampler.settings = type(sampler.settings)(full_spectrum=full)
+    policy, reason = qualify({"transformer_options": trans})
+    assert reason is None and matches(policy, trans)
+    session = SimpleNamespace(
+        patch_policy=policy, step=2, sigmas=(1.0, 0.96, 0.92, 0.82),
+        batch=1, stage="planner", mode_explorer_regime=True,
+        streams={"kept": "anchor"}, anchor_regime_start=0,
+        force_native_step=None, predict_calls=0, counts=Counter(),
+        reason=lambda label: None,
+    )
+    update_mode_explorer_regime(session)
+    if full:
+        assert session.streams == {"kept": "anchor"}
+        assert session.anchor_regime_start == 0
+        assert session.force_native_step is None
+        assert session.mode_explorer_regime is True
+        assert session.counts["mode_explorer_native_steps"] == 0
+    else:
+        assert session.streams == {}
+        assert session.anchor_regime_start == 2
+        assert session.force_native_step == 2
+        assert session.mode_explorer_regime is False
+
+
+def test_full_spectrum_setting_is_bound_to_verified_owner(mode_graph):
+    sampler, trans = mode_graph
+    policy, reason = qualify({"transformer_options": trans})
+    assert reason is None
+    sampler.settings = type(sampler.settings)(full_spectrum=True)
+    assert not matches(policy, trans)
+    changed_policy, reason = qualify({"transformer_options": trans})
+    assert reason is None
+    assert changed_policy.mode_explorer.settings.full_spectrum is True
+    assert matches(changed_policy, trans)
