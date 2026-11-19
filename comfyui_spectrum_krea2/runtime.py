@@ -75,6 +75,8 @@ class Session:
     # of this predicted phase to be actual. A session-wide record changes after
     # the first branch, so comparing it alone would skip later branches.
     force_native_step: int | None = None
+    # The early ModeExplorer operator must never share forecast history with the native regime.
+    mode_explorer_regime: bool | None = None
     # Attention route (native, dense or sol) of the latest actual evaluation,
     # PECE corrections included.
     attention_route: str | None = None
@@ -161,7 +163,11 @@ class Session:
         self.peak_history_bytes = max(self.peak_history_bytes, self.nbytes)
 
     def report(self):
-        return {"actual": self.counts["actual"], "forecast": self.counts["forecast"],
+        mode = getattr(self.patch_policy, "mode_explorer", None)
+        spectrum_policy = (
+            "full" if getattr(mode.settings, "full_spectrum", False) else "guarded"
+        ) if mode is not None else "spectrum_only"
+        return {"mode_explorer_spectrum_policy": spectrum_policy, "actual": self.counts["actual"], "forecast": self.counts["forecast"],
                 "denoiser_calls": self.counts["actual"] + self.counts["forecast"],
                 "outer_steps": self.step, "peak_history_bytes": self.peak_history_bytes,
                 "bootstrap_forecast": self.counts["bootstrap"],
@@ -185,4 +191,5 @@ class Session:
                                      "max_extrapolation_span_ratio": self.config.max_extrapolation_span_ratio},
                 "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons),
                 "diffaid_gains": [dict(entry) for entry in self.diffaid_gains],
-                "native_only": self.native_only, "stage": self.stage}
+                "native_only": self.native_only, "stage": self.stage,
+                "mode_explorer_native_steps": self.counts["mode_explorer_native_steps"]}
