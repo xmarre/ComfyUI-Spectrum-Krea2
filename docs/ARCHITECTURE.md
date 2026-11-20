@@ -182,3 +182,16 @@ reset Adams history as required by the native solver. CPU execution tests
 cover predictor/corrector ordering, source mismatch fail-closed behavior,
 stochastic-noise repeatability, callback counts and locked-step output parity.
 These checks do not establish image fidelity or CUDA acceleration.
+
+## ModeExplorer reference admission
+
+The verified ModeExplorer diffusion wrapper may attach invocation-local pending
+reference work. The native adapter calls the qualified preparation function only
+when about to run the actual model and after checking the live callback identities.
+Auxiliary forwards suspend Spectrum's session and capture context. Their returns do
+not change anchors or denoiser counters. The guarded regime follows the invocation's
+remaining reference budget rather than an outer-step estimate when the companion
+supports the runtime predicate. Full mode bypasses that regime override. Debug reports
+record actual and forecast dispatch, rejected candidates, and the retained anchors
+associated with a feature edit attempt. Stochastic solver transitions and the
+Scale-Locked stage policy remain owned by Spectrum and the outer sampler.

@@ -291,7 +291,7 @@ def test_fallback_diagnostic_reports_only_names_and_owner(providers):
     assert "unknown_patch" in detail and "attn1_patch" in detail
     assert "sol_marker=True" in detail
     assert "SharedTimestepWrapper" in detail
-    assert CONTRACT_REVISION == "qualified-krea2-v3"
+    assert CONTRACT_REVISION == "qualified-krea2-v4"
 
 
 def test_kj_preview_registration_is_version_independent(providers):

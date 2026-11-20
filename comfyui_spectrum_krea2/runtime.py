@@ -32,6 +32,7 @@ class Stream:
     actual_anchors: int = 0
     # Diff-Aid sigma-window gain shared by every retained history anchor.
     diffaid_regime: object = UNOBSERVED
+    feature_attempted_anchors: set = field(default_factory=set)
 
 
 @dataclass
@@ -111,7 +112,7 @@ class Session:
                 "sigma": self.sigmas[step] if step < len(self.sigmas) else None,
                 "gain": list(gains)})
 
-    def note_decision(self, route, options, reason=None):
+    def note_decision(self, route, options, reason=None, stream=None):
         mode = getattr(self.patch_policy, "mode_explorer", None)
         if len(self.denoiser_decisions) >= 256 or not (
             self.config.debug or (mode is not None and getattr(mode.settings, "diagnostics", False))
@@ -122,6 +123,15 @@ class Session:
                  "sigma": self.sigmas[step] if step is not None and step < len(self.sigmas) else None}
         if reason is not None:
             entry["reason"] = reason
+        if route == "actual" and mode is not None and mode.feature_attempted is not None:
+            entry["feature_edit_attempted"] = mode.feature_attempted(options)
+        if stream is not None:
+            retained = stream.history.coordinates
+            anchors = retained[-1:] if route == "bootstrap" else retained
+            entry["feature_anchor_steps"] = [
+                self.coordinates.index(coordinate) for coordinate in anchors
+                if coordinate in stream.feature_attempted_anchors
+            ]
         self.denoiser_decisions.append(entry)
 
     @property

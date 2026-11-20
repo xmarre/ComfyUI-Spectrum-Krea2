@@ -294,7 +294,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         else:
             stream.last_step = step
             session.counts["forecast"] += 1
-            session.note_decision(mode, options)
+            session.note_decision(mode, options, stream=stream)
             session.served_forecast = True
             if mode == "bootstrap":
                 session.counts["bootstrap"] += 1
@@ -354,6 +354,14 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
     if len(captured) == 1 and not capture_error:
         try:
             session.observe(stream, captured[0])
+            mode_policy = getattr(policy, "mode_explorer", None)
+            if (mode_policy is not None and mode_policy.feature_attempted is not None
+                    and (session.config.debug or getattr(mode_policy.settings, "diagnostics", False))):
+                stream.feature_attempted_anchors.intersection_update(stream.history.coordinates)
+                if (mode_policy.feature_attempted(options)
+                        and stream.history.coordinates
+                        and stream.history.coordinates[-1] == session.coordinates[step]):
+                    stream.feature_attempted_anchors.add(session.coordinates[step])
         except (ForecastUnavailable, RuntimeError) as exc:
             session.reason("history capture rejected: " + str(exc))
             stream.history.clear()

@@ -131,6 +131,7 @@ class ModeExplorerPolicy:
     settings: object
     prepare_native: object = None
     guidance_pending: object = None
+    feature_attempted: object = None
 
     def guides(self, sigma, step, batch, stage):
         """Conservative *possible* attention intervention regime for an outer step.
@@ -172,9 +173,11 @@ def _mode_explorer_contract(entries, patches):
     # Settings is frozen and validates its own argument ranges.
     prepare = getattr(module, "prepare_native_options", None)
     pending = getattr(module, "guidance_pending", None)
+    attempted = getattr(module, "native_feature_attempted", None)
     return ModeExplorerPolicy(sampler, diffusion, hook[0], settings,
                               prepare if callable(prepare) else None,
-                              pending if callable(pending) else None)
+                              pending if callable(pending) else None,
+                              attempted if callable(attempted) else None)
 
 
 @dataclass(frozen=True)
@@ -434,7 +437,14 @@ def matches(policy, trans):
         expected["attn1_patch"] = [policy.diffaid_patch]
     if policy.mode_explorer is not None:
         expected["attn1_output_patch"] = [policy.mode_explorer.hook]
-        if policy.mode_explorer.sampler.settings is not policy.mode_explorer.settings:
+        mode = policy.mode_explorer
+        module = sys.modules.get(type(mode.sampler).__module__)
+        if (mode.sampler.settings is not mode.settings or module is None
+                or mode.diffusion is not getattr(module, "diffusion_wrapper", None)
+                or mode.hook is not getattr(module, "attention_feature", None)
+                or mode.prepare_native is not getattr(module, "prepare_native_options", None)
+                or mode.guidance_pending is not getattr(module, "guidance_pending", None)
+                or mode.feature_attempted is not getattr(module, "native_feature_attempted", None)):
             return False
     if patches != expected:
         return False
