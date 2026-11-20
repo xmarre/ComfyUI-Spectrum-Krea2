@@ -32,6 +32,7 @@ class Stream:
     actual_anchors: int = 0
     # Diff-Aid sigma-window gain shared by every retained history anchor.
     diffaid_regime: object = UNOBSERVED
+    feature_attempted_anchors: set = field(default_factory=set)
 
 
 @dataclass
@@ -75,6 +76,8 @@ class Session:
     # of this predicted phase to be actual. A session-wide record changes after
     # the first branch, so comparing it alone would skip later branches.
     force_native_step: int | None = None
+    # The early ModeExplorer operator must never share forecast history with the native regime.
+    mode_explorer_regime: bool | None = None
     # Attention route (native, dense or sol) of the latest actual evaluation,
     # PECE corrections included.
     attention_route: str | None = None
@@ -89,6 +92,7 @@ class Session:
     sigmas: tuple = ()
     # Diff-Aid sigma-window gain at its first evaluation and at every change.
     diffaid_gains: list = field(default_factory=list)
+    denoiser_decisions: list = field(default_factory=list)
 
     def disable(self, reason):
         if self.disabled_reason is None:
@@ -107,6 +111,28 @@ class Session:
                 "step": step,
                 "sigma": self.sigmas[step] if step < len(self.sigmas) else None,
                 "gain": list(gains)})
+
+    def note_decision(self, route, options, reason=None, stream=None):
+        mode = getattr(self.patch_policy, "mode_explorer", None)
+        if len(self.denoiser_decisions) >= 256 or not (
+            self.config.debug or (mode is not None and getattr(mode.settings, "diagnostics", False))
+        ):
+            return
+        step = self.correction_step if self.correction_step is not None else self.active_step
+        entry = {"step": step, "route": route, "branches": list(options.get("cond_or_uncond", ())),
+                 "sigma": self.sigmas[step] if step is not None and step < len(self.sigmas) else None}
+        if reason is not None:
+            entry["reason"] = reason
+        if route == "actual" and mode is not None and mode.feature_attempted is not None:
+            entry["feature_edit_attempted"] = mode.feature_attempted(options)
+        if stream is not None:
+            retained = stream.history.coordinates
+            anchors = retained[-1:] if route == "bootstrap" else retained
+            entry["feature_anchor_steps"] = [
+                self.coordinates.index(coordinate) for coordinate in anchors
+                if coordinate in stream.feature_attempted_anchors
+            ]
+        self.denoiser_decisions.append(entry)
 
     @property
     def nbytes(self):
@@ -161,7 +187,11 @@ class Session:
         self.peak_history_bytes = max(self.peak_history_bytes, self.nbytes)
 
     def report(self):
-        return {"actual": self.counts["actual"], "forecast": self.counts["forecast"],
+        mode = getattr(self.patch_policy, "mode_explorer", None)
+        spectrum_policy = (
+            "full" if getattr(mode.settings, "full_spectrum", False) else "guarded"
+        ) if mode is not None else "spectrum_only"
+        return {"mode_explorer_spectrum_policy": spectrum_policy, "actual": self.counts["actual"], "forecast": self.counts["forecast"],
                 "denoiser_calls": self.counts["actual"] + self.counts["forecast"],
                 "outer_steps": self.step, "peak_history_bytes": self.peak_history_bytes,
                 "bootstrap_forecast": self.counts["bootstrap"],
@@ -185,4 +215,6 @@ class Session:
                                      "max_extrapolation_span_ratio": self.config.max_extrapolation_span_ratio},
                 "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons),
                 "diffaid_gains": [dict(entry) for entry in self.diffaid_gains],
-                "native_only": self.native_only, "stage": self.stage}
+                "native_only": self.native_only, "stage": self.stage,
+                "denoiser_decisions": list(self.denoiser_decisions),
+                "mode_explorer_native_steps": self.counts["mode_explorer_native_steps"]}

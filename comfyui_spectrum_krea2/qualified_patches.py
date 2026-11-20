@@ -11,8 +11,9 @@ import sys
 
 import torch
 
-CONTRACT_REVISION = "qualified-krea2-v2"
+CONTRACT_REVISION = "qualified-krea2-v4"
 SOL_KEY = "sol_krea2_sparse_attention_v1"
+MODE_EXPLORER_KEY = "mode_explorer_krea2"
 SPECTRUM_KEY = "spectrum_krea2"
 DIFFAID_WRAPPER = "diffaid_krea2_text_residual"
 KJ_PREVIEW_KEY = "kj_preview_override"
@@ -121,6 +122,64 @@ def _diffaid_gain_contract(owner, config, window):
     return DiffAidWindow(owner, config, window, state_key, coerce, gain)
 
 
+
+@dataclass(frozen=True)
+class ModeExplorerPolicy:
+    sampler: object
+    diffusion: object
+    hook: object
+    settings: object
+    prepare_native: object = None
+    guidance_pending: object = None
+    feature_attempted: object = None
+
+    def guides(self, sigma, step, batch, stage):
+        """Conservative *possible* attention intervention regime for an outer step.
+
+        The sequential reference budget is an upper bound on native guided
+        evaluations. Force these steps to be real; rebuild forecast history
+        when crossing to the ordinary operator. Even a gated-out shift must
+        not cause forecaster history to mix the two regimes.
+        """
+        cfg = self.settings
+        if (stage == "highres" or cfg.feature == "native" or cfg.strength == 0
+                or not math.isfinite(sigma) or not cfg.min_sigma <= sigma <= 1.00001):
+            return False
+        if batch == 1:
+            return cfg.operation != "batch" and step < cfg.reference_budget
+        return cfg.operation != "sequential"
+
+
+def _mode_explorer_contract(entries, patches):
+    found = {(kind, key): values for kind, key, values in entries if key == MODE_EXPLORER_KEY}
+    hook = patches.get("attn1_output_patch", ())
+    if not found and not hook:
+        return None
+    if (set(found) != {("sampler_sample", MODE_EXPLORER_KEY),
+                       ("diffusion_model", MODE_EXPLORER_KEY)}
+            or any(len(v) != 1 for v in found.values()) or len(hook) != 1):
+        return None
+    sampler = found[("sampler_sample", MODE_EXPLORER_KEY)][0]
+    diffusion = found[("diffusion_model", MODE_EXPLORER_KEY)][0]
+    module = sys.modules.get(type(sampler).__module__)
+    if (module is None or not module.__name__.endswith("mode_explorer.runtime")
+            or type(sampler) is not getattr(module, "SamplerWrapper", None)
+            or diffusion is not getattr(module, "diffusion_wrapper", None)
+            or hook[0] is not getattr(module, "attention_feature", None)):
+        return None
+    settings = getattr(sampler, "settings", None)
+    if type(settings) is not getattr(module, "Settings", None):
+        return None
+    # Settings is frozen and validates its own argument ranges.
+    prepare = getattr(module, "prepare_native_options", None)
+    pending = getattr(module, "guidance_pending", None)
+    attempted = getattr(module, "native_feature_attempted", None)
+    return ModeExplorerPolicy(sampler, diffusion, hook[0], settings,
+                              prepare if callable(prepare) else None,
+                              pending if callable(pending) else None,
+                              attempted if callable(attempted) else None)
+
+
 @dataclass(frozen=True)
 class QualifiedPatches:
     sol_override: object = None
@@ -133,6 +192,7 @@ class QualifiedPatches:
     diffaid_window: DiffAidWindow | None = None
     # Diff-Aid config object admitted with its owner, full window included.
     diffaid_config: object = None
+    mode_explorer: ModeExplorerPolicy | None = None
 
     def diffaid_regime(self, options, x):
         """Diff-Aid gain of the NEXT evaluation; None while it cannot change."""
@@ -263,15 +323,23 @@ def qualify(model_options):
     diffaid_patch, diffaid_wrapper, diffaid_window = None, None, None
     fn_wrapper = model_options.get("model_function_wrapper")
     patches = trans.get("patches", {}) or {}
-    if patches and (not isinstance(patches, dict) or set(patches) - {"attn1_patch"}):
+    if not isinstance(patches, dict) or set(patches) - {"attn1_patch", "attn1_output_patch"}:
         return None, "external transformer patches or wrappers are active"
-    if fn_wrapper is not None or patches or any(k == DIFFAID_WRAPPER for _, k, _ in entries):
+    mode_explorer = _mode_explorer_contract(entries, patches)
+    if (any(k == MODE_EXPLORER_KEY for _, k, _ in entries)
+            or "attn1_output_patch" in patches) and mode_explorer is None:
+        return None, "unverified ModeExplorer patch or wrapper ownership"
+    diffaid_patches = {k: v for k, v in patches.items() if k != "attn1_output_patch"}
+    if mode_explorer is not None and (fn_wrapper is not None or diffaid_patches or
+                                      any(k == DIFFAID_WRAPPER for _, k, _ in entries)):
+        return None, "ModeExplorer and Diff-Aid combined attention modifications are not qualified"
+    if fn_wrapper is not None or diffaid_patches or any(k == DIFFAID_WRAPPER for _, k, _ in entries):
         if (not _registered_type(fn_wrapper, "SharedTimestepWrapper") or
                 fn_wrapper.existing_wrapper is not None):
             return None, "unsupported model function wrapper"
-        if not isinstance(patches, dict) or set(patches) - {"attn1_patch"}:
+        if not isinstance(diffaid_patches, dict) or set(diffaid_patches) - {"attn1_patch"}:
             return None, "external transformer patches or wrappers are active"
-        attn = patches.get("attn1_patch", [])
+        attn = diffaid_patches.get("attn1_patch", [])
         residuals = [v[0] for _, key, v in entries if key == DIFFAID_WRAPPER and len(v) == 1]
         if len(attn) == 1 and not residuals and _registered_type(attn[0], "Krea2AttentionPatch"):
             diffaid_patch = attn[0]
@@ -320,6 +388,9 @@ def qualify(model_options):
         allowed.update({("outer_sample", SOL_KEY), ("diffusion_model", SOL_KEY)})
     if diffaid_wrapper is not None:
         allowed.add(("diffusion_model", DIFFAID_WRAPPER))
+    if mode_explorer is not None:
+        allowed.update({("sampler_sample", MODE_EXPLORER_KEY),
+                        ("diffusion_model", MODE_EXPLORER_KEY)})
     if any((kind, key) not in allowed or not values for kind, key, values in entries):
         return None, "external transformer patches or wrappers are active"
     if sol_override is not None:
@@ -340,6 +411,7 @@ def qualify(model_options):
         getattr(type(kj_preview).__call__, "__code__", None) if kj_preview is not None else None,
         frozen, diffaid_window,
         config if (diffaid_patch is not None or diffaid_wrapper is not None) else None,
+        mode_explorer,
     ), None
 
 
@@ -358,13 +430,23 @@ def matches(policy, trans):
     if trans.get("patches_replace"):
         return False
     patches = trans.get("patches", {}) or {}
-    if policy.diffaid_patch is None:
-        if patches:
+    if not isinstance(patches, dict):
+        return False
+    expected = {}
+    if policy.diffaid_patch is not None:
+        expected["attn1_patch"] = [policy.diffaid_patch]
+    if policy.mode_explorer is not None:
+        expected["attn1_output_patch"] = [policy.mode_explorer.hook]
+        mode = policy.mode_explorer
+        module = sys.modules.get(type(mode.sampler).__module__)
+        if (mode.sampler.settings is not mode.settings or module is None
+                or mode.diffusion is not getattr(module, "diffusion_wrapper", None)
+                or mode.hook is not getattr(module, "attention_feature", None)
+                or mode.prepare_native is not getattr(module, "prepare_native_options", None)
+                or mode.guidance_pending is not getattr(module, "guidance_pending", None)
+                or mode.feature_attempted is not getattr(module, "native_feature_attempted", None)):
             return False
-    elif not isinstance(patches, dict) or (
-            set(patches) != {"attn1_patch"} or
-            len(patches["attn1_patch"]) != 1 or
-            patches["attn1_patch"][0] is not policy.diffaid_patch):
+    if patches != expected:
         return False
     if policy.sol_override is not None and trans.get("optimized_attention_override") is not policy.sol_override:
         return False
@@ -394,6 +476,9 @@ def matches(policy, trans):
         allowed.add(("outer_sample", KJ_PREVIEW_KEY))
     if policy.diffaid_wrapper is not None:
         allowed.add(("diffusion_model", DIFFAID_WRAPPER))
+    if policy.mode_explorer is not None:
+        allowed.update({("sampler_sample", MODE_EXPLORER_KEY),
+                        ("diffusion_model", MODE_EXPLORER_KEY)})
     for kind, key, wrappers in wrapper_items:
         if (kind, key) not in allowed:
             return False

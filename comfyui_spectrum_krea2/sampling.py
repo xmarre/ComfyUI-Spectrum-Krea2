@@ -158,6 +158,35 @@ def validate_sampler(executor, model_wrap, sigmas, extra_args):
     return None
 
 
+
+def update_mode_explorer_regime(session, model_options=None):
+    """Keep forecast anchors within one early-feature operator regime."""
+    policy = session.patch_policy
+    mode = getattr(policy, "mode_explorer", None)
+    if (mode is None or getattr(mode.settings, "full_spectrum", False)
+            or session.step >= len(session.sigmas)):
+        # Full Spectrum retains the exact native/forecast selection policy and
+        # forecast history even across ModeExplorer's guided/native boundary.
+        return
+    guided = mode.guides(session.sigmas[session.step], session.step,
+                         session.batch, session.stage)
+    if mode.guidance_pending is not None and model_options is not None:
+        guided = mode.guidance_pending(model_options, session.sigmas[session.step])
+    previous = session.mode_explorer_regime
+    if previous is None:
+        session.mode_explorer_regime = guided
+    elif guided != previous:
+        session.streams.clear()
+        session.anchor_regime_start = max(session.anchor_regime_start, session.step)
+        session.force_native_step = session.step
+        if previous is not None:
+            session.reason("ModeExplorer early-feature regime transition")
+        session.mode_explorer_regime = guided
+    if guided:
+        session.force_native_step = session.step
+        session.counts["mode_explorer_native_steps"] += int(session.predict_calls == 0)
+
+
 class Binding:
     """Immutable installation identity; all mutable sampling state is invocation-local."""
     def __init__(self, config):
@@ -334,6 +363,7 @@ class Binding:
                     session.active_step = prior
                     session.correction_step = None
             session.disable("PECE correction sigma/order mismatch")
+        update_mode_explorer_regime(session, model_options)
         session.predict_calls += 1
         if session.predict_calls != 1 or session.step >= len(session.coordinates):
             session.disable("repeated or off-schedule denoiser opportunity")
