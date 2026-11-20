@@ -9,6 +9,8 @@ from .forecast import ForecastUnavailable, ForecastNonfinite
 from .runtime import CURRENT, UNOBSERVED
 from .qualified_patches import matches, DiffAidGainUnavailable
 
+MODE_EXPLORER_DEFERRED_PROBES = True
+
 CAPTURE = contextvars.ContextVar("spectrum_krea2_capture", default=None)
 
 
@@ -132,9 +134,14 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
     options = transformer_options if transformer_options is not None else {}
     session = CURRENT.get()
     def native():
+        if session is not None and session.binding is binding and session.patch_policy is not None:
+            mode = getattr(session.patch_policy, "mode_explorer", None)
+            if mode is not None and mode.prepare_native is not None and matches(session.patch_policy, options):
+                mode.prepare_native(options)
         result = executor(x, timesteps, context, attention_mask, ref_latents, options, **kwargs)
         if session is not None and session.binding is binding:
             session.counts["actual"] += 1
+            session.note_decision("actual", options)
         return result
     if session is None or session.binding is not binding:
         return native()
@@ -196,6 +203,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
             # will replace this placeholder with exact-correction-anchor output.
             session.counts["forecast"] += 1
             session.counts["pece_solver_skip"] += 1
+            session.note_decision("pece_skip", options)
             session.served_forecast = True
             return torch.zeros_like(x)
     inner = executor.class_obj
@@ -277,6 +285,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
             # Retry only forecast-owned work. Errors from the native denoiser
             # below are allowed to propagate unchanged.
             session.reason("forecast rejected: " + str(exc))
+            session.note_decision("forecast_rejected", options, str(exc))
             prediction = None
             # A horizon/fit precondition miss does not invalidate real anchors.
             # Keeping them lets the next actual call build enough fit span.
@@ -285,6 +294,7 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
         else:
             stream.last_step = step
             session.counts["forecast"] += 1
+            session.note_decision(mode, options, stream=stream)
             session.served_forecast = True
             if mode == "bootstrap":
                 session.counts["bootstrap"] += 1
@@ -344,6 +354,14 @@ def diffusion(binding, executor, x, timesteps, context, attention_mask=None,
     if len(captured) == 1 and not capture_error:
         try:
             session.observe(stream, captured[0])
+            mode_policy = getattr(policy, "mode_explorer", None)
+            if (mode_policy is not None and mode_policy.feature_attempted is not None
+                    and (session.config.debug or getattr(mode_policy.settings, "diagnostics", False))):
+                stream.feature_attempted_anchors.intersection_update(stream.history.coordinates)
+                if (mode_policy.feature_attempted(options)
+                        and stream.history.coordinates
+                        and stream.history.coordinates[-1] == session.coordinates[step]):
+                    stream.feature_attempted_anchors.add(session.coordinates[step])
         except (ForecastUnavailable, RuntimeError) as exc:
             session.reason("history capture rejected: " + str(exc))
             stream.history.clear()

@@ -175,3 +175,26 @@ Compare `off`, `balanced`, and `balanced_detail` on the same seed
 and checkpoint, including close-up detail at the last resolution stage.
 
 Scale-Locked Regenerate skips fully composition-locked high-resolution denoiser calls for its ten offered native solvers. The **separate Spectrum acceleration layer** supports Euler, DPM++ 2M, RES Multistep, Gradient Estimation, DEIS, iPNDM, iPNDM-V, **ER-SDE**, **SA-Solver**, and **SA-Solver PECE** when native source contracts match. A forecast replaces one denoised prediction; every solver retains its original numerical update and history, except that SA-Solver keeps forecasts out of its Adams history and replaces forecasts on stochastic inputs with an actual-anchor value (see docs/ARCHITECTURE.md). ER-SDE continues to inject native stochastic noise (or runs in its explicitly selected ODE mode). The native first-sigma flow correction is also applied to Spectrum history coordinates. ER-SDE accepts validated `max_stage`, `s_noise`, `noise_scaler` and `noise_sampler` options; unrecognized overrides and modified solver or sigma conversion source require native fallback. Scale-Locked's ER-SDE noise sampler couples per-step Gaussian increments across planner and target resolutions. All structural/CPU results are separate from real Krea 2 checkpoint quality and CUDA throughput, which require matched-seed evaluation.
+
+
+### ModeExplorer scheduling and traces
+
+Connect **MODEL → ModeExplorer → optional Sol-Krea2 → Spectrum → sampler**.
+ModeExplorer's auxiliary reference and initial-noise forwards use isolated
+invocation state. Spectrum only grants reference probes after it has chosen
+an actual forward. A forecast leaves the reference budget untouched.
+
+With guarded mode, Spectrum forces actual evaluations during eligible feature
+guidance and rebuilds history when that regime ends. Full Spectrum keeps its
+original forecasting policy and retains anchors across the edit boundary.
+A retained anchor from an attention edit can affect a later forecast. With
+Spectrum debug or ModeExplorer diagnostics enabled, the summary lists actual
+evaluations, regression and bootstrap forecasts, rejected forecasts, and
+feature-attempt anchors used by later forecasts. Read the realized decision
+sequence when comparing two runs. Identical settings can still yield different
+routes when a data-dependent check rejects a forecast.
+
+Use the companion [ModeExplorer PR #1](https://github.com/xmarre/ComfyUI-ModeExplorer/pull/1)
+for the paired overlay and example graphs. Scale-Locked's stage-specific
+guards and solver updates retain their existing behavior. Full-checkpoint GPU
+performance and image quality require separate measurements.
