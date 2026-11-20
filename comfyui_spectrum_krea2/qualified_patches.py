@@ -11,7 +11,7 @@ import sys
 
 import torch
 
-CONTRACT_REVISION = "qualified-krea2-v3"
+CONTRACT_REVISION = "qualified-krea2-v4"
 SOL_KEY = "sol_krea2_sparse_attention_v1"
 MODE_EXPLORER_KEY = "mode_explorer_krea2"
 SPECTRUM_KEY = "spectrum_krea2"
@@ -129,6 +129,8 @@ class ModeExplorerPolicy:
     diffusion: object
     hook: object
     settings: object
+    prepare_native: object = None
+    guidance_pending: object = None
 
     def guides(self, sigma, step, batch, stage):
         """Conservative *possible* attention intervention regime for an outer step.
@@ -168,7 +170,11 @@ def _mode_explorer_contract(entries, patches):
     if type(settings) is not getattr(module, "Settings", None):
         return None
     # Settings is frozen and validates its own argument ranges.
-    return ModeExplorerPolicy(sampler, diffusion, hook[0], settings)
+    prepare = getattr(module, "prepare_native_options", None)
+    pending = getattr(module, "guidance_pending", None)
+    return ModeExplorerPolicy(sampler, diffusion, hook[0], settings,
+                              prepare if callable(prepare) else None,
+                              pending if callable(pending) else None)
 
 
 @dataclass(frozen=True)

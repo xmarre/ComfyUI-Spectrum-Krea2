@@ -159,7 +159,7 @@ def validate_sampler(executor, model_wrap, sigmas, extra_args):
 
 
 
-def update_mode_explorer_regime(session):
+def update_mode_explorer_regime(session, model_options=None):
     """Keep forecast anchors within one early-feature operator regime."""
     policy = session.patch_policy
     mode = getattr(policy, "mode_explorer", None)
@@ -170,8 +170,12 @@ def update_mode_explorer_regime(session):
         return
     guided = mode.guides(session.sigmas[session.step], session.step,
                          session.batch, session.stage)
+    if mode.guidance_pending is not None and model_options is not None:
+        guided = mode.guidance_pending(model_options, session.sigmas[session.step])
     previous = session.mode_explorer_regime
-    if previous is None or guided != previous:
+    if previous is None:
+        session.mode_explorer_regime = guided
+    elif guided != previous:
         session.streams.clear()
         session.anchor_regime_start = max(session.anchor_regime_start, session.step)
         session.force_native_step = session.step
@@ -329,7 +333,6 @@ class Binding:
                 and session.disabled_reason is None):
             # Qualification covered the wrapper present at sampler entry.
             session.disable("model function wrapper changed during sampling")
-        update_mode_explorer_regime(session)
         if session.pece_pending_step is not None:
             step = session.pece_pending_step
             target = session.pece_sigmas[step]
@@ -360,6 +363,7 @@ class Binding:
                     session.active_step = prior
                     session.correction_step = None
             session.disable("PECE correction sigma/order mismatch")
+        update_mode_explorer_regime(session, model_options)
         session.predict_calls += 1
         if session.predict_calls != 1 or session.step >= len(session.coordinates):
             session.disable("repeated or off-schedule denoiser opportunity")

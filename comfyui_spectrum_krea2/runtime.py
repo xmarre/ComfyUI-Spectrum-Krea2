@@ -91,6 +91,7 @@ class Session:
     sigmas: tuple = ()
     # Diff-Aid sigma-window gain at its first evaluation and at every change.
     diffaid_gains: list = field(default_factory=list)
+    denoiser_decisions: list = field(default_factory=list)
 
     def disable(self, reason):
         if self.disabled_reason is None:
@@ -109,6 +110,19 @@ class Session:
                 "step": step,
                 "sigma": self.sigmas[step] if step < len(self.sigmas) else None,
                 "gain": list(gains)})
+
+    def note_decision(self, route, options, reason=None):
+        mode = getattr(self.patch_policy, "mode_explorer", None)
+        if len(self.denoiser_decisions) >= 256 or not (
+            self.config.debug or (mode is not None and getattr(mode.settings, "diagnostics", False))
+        ):
+            return
+        step = self.correction_step if self.correction_step is not None else self.active_step
+        entry = {"step": step, "route": route, "branches": list(options.get("cond_or_uncond", ())),
+                 "sigma": self.sigmas[step] if step is not None and step < len(self.sigmas) else None}
+        if reason is not None:
+            entry["reason"] = reason
+        self.denoiser_decisions.append(entry)
 
     @property
     def nbytes(self):
@@ -192,4 +206,5 @@ class Session:
                 "fallback": self.disabled_reason, "actual_reasons": dict(self.reasons),
                 "diffaid_gains": [dict(entry) for entry in self.diffaid_gains],
                 "native_only": self.native_only, "stage": self.stage,
+                "denoiser_decisions": list(self.denoiser_decisions),
                 "mode_explorer_native_steps": self.counts["mode_explorer_native_steps"]}
